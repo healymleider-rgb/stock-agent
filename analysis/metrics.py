@@ -675,26 +675,49 @@ def compute_signal_confidence(
     conf = max(0.0, min(1.0, base - dispersion_penalty - conflict_penalty))
     conf = round(conf, 3)
 
-    # Build explanation
-    bull_names = [n for n, d in directions.items() if d == "bull"]
-    bear_names = [n for n, d in directions.items() if d == "bear"]
+    # Build explanation — name specific strong/weak categories so the reader
+    # understands exactly what is driving and limiting conviction.
+    bull_names = [n.replace("_", " ") for n, d in directions.items() if d == "bull"]
+    bear_names = [n.replace("_", " ") for n, d in directions.items() if d == "bear"]
+
+    def _join(names: list[str]) -> str:
+        return ", ".join(names[:3]) if names else ""
 
     if conflict_note:
-        explanation = f"Mixed signals reduce conviction — {conflict_note}."
+        # Name which factors are strong and what's conflicting
+        fund_bull = [n for n in bull_names if n in {"valuation", "growth", "profitability", "financial health"}]
+        if fund_bull:
+            strong_str = _join(fund_bull)
+            explanation = (
+                f"Strong {strong_str} fundamentals, but {conflict_note} —"
+                " mixed signals reduce conviction."
+            )
+        else:
+            explanation = f"Mixed signals reduce conviction — {conflict_note}."
     elif agreement_ratio >= 0.80 and dispersion < 35:
         if bull_count >= bear_count:
-            named = ", ".join(n.replace("_", " ") for n in bull_names[:3])
+            named = _join(bull_names[:3])
             explanation = f"High signal agreement across {named} — conviction supported."
         else:
-            named = ", ".join(n.replace("_", " ") for n in bear_names[:3])
+            named = _join(bear_names[:3])
             explanation = f"High agreement on weakness across {named}."
     elif dispersion > 40:
+        # Name the strong and weak poles explicitly
+        _top = sorted(valid.items(), key=lambda x: x[1], reverse=True)
+        _bot = sorted(valid.items(), key=lambda x: x[1])
+        strong_str = _join([n.replace("_", " ") for n, _ in _top[:2]])
+        weak_str   = _join([n.replace("_", " ") for n, _ in _bot[:2]])
         explanation = (
-            f"Wide score dispersion ({dispersion:.0f} pts) across factors"
-            " limits conviction despite directional majority."
+            f"Strong {strong_str} offset by weak {weak_str}"
+            f" — wide score spread ({dispersion:.0f} pts) limits conviction."
         )
     elif agreement_ratio >= 0.60:
-        explanation = "Moderate signal agreement — most factors aligned but some divergence."
+        if bull_count >= bear_count:
+            named = _join(bull_names[:3])
+            explanation = f"Most factors ({named}) lean bullish — moderate conviction."
+        else:
+            named = _join(bear_names[:3])
+            explanation = f"Most factors ({named}) lean bearish — moderate conviction."
     else:
         explanation = "Signals are mixed — no clear directional consensus across factors."
 

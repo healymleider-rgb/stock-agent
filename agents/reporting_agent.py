@@ -214,7 +214,7 @@ class ReportingAgent(BaseAgent):
             ),
             f"  Confidence    : {sc.confidence:.0%}",
             *(
-                [f"  {'':16s}  {sc.confidence_explanation}"]
+                [f"  Why           : {sc.confidence_explanation}"]
                 if sc.confidence_explanation else []
             ),
             "─" * 68,

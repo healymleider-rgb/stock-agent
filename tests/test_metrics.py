@@ -1313,6 +1313,198 @@ def test_rendered_scenario_no_placeholder_dashes_ttd_like():
     )
 
 
+# ── Test group 14: final output-layer completeness ────────────────────────────
+#
+# These tests verify the exact rendered text that the user sees, not just
+# whether backend fields exist.  They are the definitive acceptance criteria
+# for the scenario and confidence output-layer fixes.
+
+
+def test_scenario_no_placeholder_dashes():
+    """
+    The rendered scenario section must never contain '— — —' or rows of dashes
+    standing in for missing data.  Every visible row must have a real value.
+    """
+    vr = _vr_with_pe(current_price=120.0, pe=25.0, eps=5.0, growth_pct=12.5)
+    lines = ReportingAgent._build_valuation_range_section(vr, current_price=120.0)
+    output = "\n".join(lines)
+
+    # No long runs of dashes used as placeholders (separator lines use ─, not —)
+    import re
+    dash_placeholder = re.search(r"—\s*—", output)
+    assert dash_placeholder is None, (
+        f"Found placeholder dashes in rendered output:\n{output}"
+    )
+    # No 'N/A' in the primary driver rows
+    primary_section_lines = [l for l in lines if any(
+        kw in l for kw in ("P/E multiple", "EPS (1yr fwd)", "Implied price", "EV/EBITDA mult", "Rev/share")
+    )]
+    for l in primary_section_lines:
+        assert "N/A" not in l, f"N/A found in driver row: {l!r}\nFull output:\n{output}"
+
+
+def test_scenario_only_one_primary_method_rendered():
+    """
+    Only ONE primary driver section is rendered.  The unused methods must not
+    appear as rows — they may appear only in the compact 'Supporting methods'
+    single-line reference (base case only).
+    """
+    vr = _vr_with_pe(current_price=120.0, pe=25.0, eps=5.0, growth_pct=12.5)
+    lines = ReportingAgent._build_valuation_range_section(vr, current_price=120.0)
+    output = "\n".join(lines)
+
+    # Exactly one "Primary Driver" declaration
+    primary_count = output.count("Primary Driver")
+    assert primary_count == 1, (
+        f"Expected exactly 1 'Primary Driver' declaration, found {primary_count}:\n{output}"
+    )
+    # No separate EV/EBITDA or P/S multiple rows when P/E is primary
+    # (they may appear in the compact supporting-methods line, not as full table rows)
+    ev_rows = [l for l in lines if l.strip().startswith("EV/EBITDA mult")]
+    ps_rows = [l for l in lines if l.strip().startswith("P/S multiple")]
+    assert not ev_rows, f"EV/EBITDA row rendered when P/E is primary:\n{output}"
+    assert not ps_rows, f"P/S row rendered when P/E is primary:\n{output}"
+
+
+def test_scenario_inputs_and_outputs_both_visible():
+    """
+    The rendered scenario section must show BOTH the valuation inputs (multiples,
+    EPS) AND the outputs (implied prices, vs-current) so assumptions are traceable.
+    """
+    vr = _vr_with_pe(current_price=120.0, pe=25.0, eps=5.0, growth_pct=12.5)
+    lines = ReportingAgent._build_valuation_range_section(vr, current_price=120.0)
+    output = "\n".join(lines)
+
+    assert "P/E multiple" in output,  "Input: P/E multiple row missing"
+    assert "EPS (1yr fwd)" in output, "Input: EPS row missing"
+    assert "Implied price" in output, "Output: Implied price row missing"
+    assert "vs Current" in output,    "Output: vs Current row missing"
+
+
+def test_confidence_explanation_non_empty_and_factor_specific():
+    """
+    compute_signal_confidence must produce a non-empty explanation that names
+    at least one specific factor category (not boilerplate only).
+    """
+    cats_conflict = {
+        "valuation":        _cs("valuation",        55.0),
+        "growth":           _cs("growth",           80.0),
+        "profitability":    _cs("profitability",    78.0),
+        "financial_health": _cs("financial_health", 72.0),
+        "momentum":         _cs("momentum",         27.0),
+        "risk":             _cs("risk",             60.0),
+    }
+    _, explanation = compute_signal_confidence(cats_conflict)
+
+    assert explanation, "Explanation must be non-empty"
+    # Must name a factor (growth, momentum, profitability, valuation, or financial health)
+    factor_words = {"growth", "momentum", "profitability", "valuation", "financial", "risk"}
+    words_in_explanation = set(explanation.lower().split())
+    named = factor_words & words_in_explanation
+    assert named, (
+        f"Explanation must name at least one factor category. Got: {explanation!r}"
+    )
+
+
+def test_confidence_explanation_changes_with_factor_mix():
+    """
+    The confidence explanation must produce different text for different factor mixes —
+    it must not be a hardcoded string.
+    """
+    cats_all_bull = {
+        "valuation":        _cs("valuation",        72.0),
+        "growth":           _cs("growth",           75.0),
+        "profitability":    _cs("profitability",    78.0),
+        "financial_health": _cs("financial_health", 70.0),
+        "momentum":         _cs("momentum",         68.0),
+        "risk":             _cs("risk",             65.0),
+    }
+    cats_conflict = {
+        "valuation":        _cs("valuation",        55.0),
+        "growth":           _cs("growth",           80.0),
+        "profitability":    _cs("profitability",    78.0),
+        "financial_health": _cs("financial_health", 72.0),
+        "momentum":         _cs("momentum",         27.0),  # conflict
+        "risk":             _cs("risk",             60.0),
+    }
+    _, expl_bull = compute_signal_confidence(cats_all_bull)
+    _, expl_conflict = compute_signal_confidence(cats_conflict)
+
+    assert expl_bull != expl_conflict, (
+        f"Explanation must differ between aligned and conflicting signals.\n"
+        f"  Aligned:   {expl_bull!r}\n"
+        f"  Conflict:  {expl_conflict!r}"
+    )
+    # Conflict explanation must mention the divergence
+    assert "momentum" in expl_conflict.lower() or "mixed" in expl_conflict.lower(), (
+        f"Conflict explanation should mention momentum divergence: {expl_conflict!r}"
+    )
+
+
+def test_confidence_why_line_rendered_in_memo():
+    """
+    The rendered memo must contain a 'Why :' line (the labeled confidence explanation)
+    that is not a blank or boilerplate-only string.
+    """
+    sd = _make_stock(
+        quarterly_eps=[1.5, 1.4, 1.3, 1.2],
+        annual_income=[
+            (10e9, 2e9, 4.0),
+            (9e9,  1.8e9, 3.5),
+            (8e9,  1.5e9, 3.0),
+        ],
+    )
+    sd.ratios[0].gross_margin   = 0.55
+    sd.ratios[0].net_margin     = 0.22
+    sd.ratios[0].roe            = 0.28
+    sd.ratios[0].debt_to_equity = 0.25
+    sd.ratios[0].current_ratio  = 2.5
+
+    from agents.fundamental_analysis_agent import FundamentalAnalysisAgent
+    from models.message import AgentMessage, MessageType
+    from analysis.scorer import build_scorecard
+    from config import Config
+
+    fa = FundamentalAnalysisAgent()
+    fa_resp = fa.handle(_fund_request(sd))
+    assert not fa_resp.is_error()
+
+    fund = fa_resp.payload
+    w = Config.SCORE_WEIGHTS
+
+    def _def(n, wt): return _CS(name=n, score=50.0, weight=wt, data_quality="missing")
+
+    val  = fund.get("valuation")        or _def("valuation", w["valuation"])
+    gro  = fund.get("growth")           or _def("growth", w["growth"])
+    pro  = fund.get("profitability")    or _def("profitability", w["profitability"])
+    hlt  = fund.get("financial_health") or _def("financial_health", w["financial_health"])
+    mom  = _def("momentum", w["momentum"])
+    risk = _def("risk", w["risk"])
+
+    sc = build_scorecard(
+        ticker="TEST", valuation=val, growth=gro, profitability=pro,
+        financial_health=hlt, momentum=mom, risk=risk,
+        risk_flags=[], confidence=0.75,
+    )
+    cats = {"valuation":val,"growth":gro,"profitability":pro,
+            "financial_health":hlt,"momentum":mom,"risk":risk}
+    _, explanation = compute_signal_confidence(cats)
+    sc.confidence_explanation = explanation
+
+    ra = ReportingAgent()
+    agent_findings = {"fundamental": fund, "technical": {}, "risk": {}, "macro": {}}
+    memo = ra._build_memo(sc, sd, agent_findings)
+
+    why_lines = [l for l in memo.splitlines() if "Why" in l]
+    assert why_lines, (
+        f"Memo must contain a 'Why' confidence explanation line.\n"
+        f"Confidence-related lines in memo:\n"
+        + "\n".join(l for l in memo.splitlines() if "onfidence" in l or "Why" in l)
+    )
+    why_text = why_lines[0]
+    assert len(why_text.strip()) > 10, f"Why line is too short to be meaningful: {why_text!r}"
+
+
 if __name__ == "__main__":
     # Quick smoke test without pytest
     tests = [

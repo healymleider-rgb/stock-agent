@@ -500,11 +500,10 @@ class ValidationGate:
         # ── Market cap (derived: price × shares) ─────────────────────────────
         api_mktcap_b  = (m.market_cap_api / 1e9)  if (m and m.market_cap_api)  else None
         comp_mktcap_b = (price_val * shares_val / 1e9) if (price_val and shares_val) else None
-        # Authoritative market cap: api if not adjusted; recomputed if price was overridden
-        auth_mktcap_b = (
-            (m.market_cap_recomp / 1e9) if (m and m.market_cap_recomp and m.price_adjusted)
-            else api_mktcap_b
-        )
+        # Authoritative market cap: always price × shares (computed).
+        # FMP's cached market_cap field lags intraday price moves by ~2.7%
+        # and is no longer used as the authoritative source.
+        auth_mktcap_b = comp_mktcap_b
 
         # ── EPS ───────────────────────────────────────────────────────────────
         ttm_eps      = m.ttm_eps       if m else None
@@ -584,12 +583,19 @@ class ValidationGate:
         # ── Macro ─────────────────────────────────────────────────────────────
         macro_regime = macro_findings.get("macro_regime", "Unknown")
         macro_score  = macro_findings.get("macro_score", None)
-        lei_snap     = macro_findings.get("lei_snapshot", {})
-        cli_val      = lei_snap.get("cli") if lei_snap else None
-        claims_val   = lei_snap.get("jobless_claims") if lei_snap else None
-        housing_val  = lei_snap.get("housing_starts") if lei_snap else None
-        mfg_val      = lei_snap.get("manuf_employ") if lei_snap else None
-        yield_val    = lei_snap.get("yield_spread") if lei_snap else None
+        # MacroLEIAgent stores the raw FRED snapshot under "snapshot" (not "lei_snapshot").
+        # Key names mirror FREDProvider.get_lei_snapshot() output.
+        lei_snap     = macro_findings.get("snapshot", {})
+        cli_val      = lei_snap.get("oecd_cli")           if lei_snap else None
+        claims_val   = lei_snap.get("jobless_claims")     if lei_snap else None
+        housing_val  = lei_snap.get("housing_starts")     if lei_snap else None
+        mfg_val      = lei_snap.get("mfg_employment")     if lei_snap else None
+        yield_val    = lei_snap.get("yield_spread_10y2y") if lei_snap else None
+        # cli_stale: True when MacroLEIAgent explicitly nulled oecd_cli because the
+        # FRED observation was older than the 45-day staleness threshold.  Block 5
+        # exempts a stale-but-acknowledged CLI from the "missing indicator" failure.
+        _obs_dates   = macro_findings.get("observation_dates", {})
+        cli_stale    = str(_obs_dates.get("oecd_cli", "")).startswith("STALE")
 
         # ── Execution ─────────────────────────────────────────────────────────
         stance_raw = (
@@ -648,6 +654,7 @@ class ValidationGate:
             },
             "macro": {
                 "cli":            cli_val,
+                "cli_stale":      cli_stale,
                 "jobless_claims": claims_val,
                 "housing_starts": housing_val,
                 "manuf_employ":   mfg_val,
@@ -712,34 +719,37 @@ class ValidationGate:
         return b
 
     def _b2_market_cap_triangle(self, snap: Dict[str, Any]) -> BlockResult:
-        """Block 2 — Market Cap Triangle: price × shares = market cap."""
+        """Block 2 — Market Cap Triangle: price × shares yields a positive market cap.
+
+        auth_mktcap_b is always price × shares (set in build_snapshot), so there is
+        no FMP API value to compare against.  The block verifies price and shares are
+        present and that the computed market cap is positive.
+        """
         b = BlockResult(2, "Market Cap Triangle")
-        price  = (snap.get("price") or {}).get("value")
+        price    = (snap.get("price") or {}).get("value")
         shares_b = (snap.get("shares_b") or {}).get("value")
-        mktcap = snap.get("market_cap_b", {})
-        api_b  = mktcap.get("api")
-        comp_b = mktcap.get("computed")
 
         if price is None or shares_b is None:
             b.fail("price or shares unavailable — cannot verify market cap triangle")
             return b
 
-        expected_b = price * shares_b  # already in billions
-        if api_b is not None:
-            delta = abs(api_b - expected_b) / max(expected_b, 0.001)
-            if delta > 0.005:
-                correction = b.correct(
-                    "market_cap_b",
-                    f"${api_b:.2f}B (API)",
-                    f"${expected_b:.2f}B (price × shares)",
-                    "Block 2: price × shares",
-                )
-                snap["market_cap_b"]["auth"] = expected_b
-                b.fail(
-                    f"market_cap_b mismatch: API ${api_b:.2f}B vs "
-                    f"computed ${expected_b:.2f}B "
-                    f"(Δ={delta:.1%} > 0.5% tolerance)"
-                )
+        expected_b = price * shares_b  # shares_b already in billions
+        if expected_b <= 0:
+            b.fail(f"market_cap_b computed {expected_b:.4f}B is non-positive")
+            return b
+
+        # Record auth as a correction if it drifted (e.g. snapshot built externally)
+        mktcap = snap.get("market_cap_b", {})
+        auth_b = mktcap.get("auth")
+        if auth_b is not None and abs(auth_b - expected_b) > 0.001:
+            b.correct(
+                "market_cap_b",
+                f"${auth_b:.2f}B (auth)",
+                f"${expected_b:.2f}B (price × shares)",
+                "Block 2: price × shares",
+            )
+            snap["market_cap_b"]["auth"] = expected_b
+
         return b
 
     def _b3_pe_basis(self, snap: Dict[str, Any]) -> BlockResult:
@@ -934,10 +944,17 @@ class ValidationGate:
         if ms is not None and not (0 <= ms <= 100):
             b.fail(f"macro_score {ms} is outside valid range [0, 100]")
 
-        # Check that key indicator fields are present
+        # Check that key indicator fields are present.
+        # cli is exempted when MacroLEIAgent explicitly nulled it as stale
+        # (cli_stale=True) — the OECD CLI series on FRED has a known multi-month
+        # publication lag and may be permanently stale when the series is not
+        # updated.  The other three indicators are higher-frequency and must
+        # be present whenever the agent runs.
+        cli_stale = macro.get("cli_stale", False)
         missing_indicators = [
             k for k in ("cli", "jobless_claims", "housing_starts", "manuf_employ")
             if macro.get(k) is None
+            and not (k == "cli" and cli_stale)
         ]
         if missing_indicators:
             b.fail(

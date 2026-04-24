@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stockeval.local/schemas/ticker_analysis_v1.json",
+  "title": "Ticker Analysis v1",
+  "description": "Solo mode output: single-ticker analysis with entry strategy and position sizing. Derived from StockEval Layer 2 JSON. All numeric values satisfy validation rules N1 (formula-value consistency), F1 (price vintage freshness), and S1 (source attribution).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "as_of",
+    "ticker",
+    "current_price",
+    "distribution",
+    "expected_return",
+    "entry_strategy",
+    "position_sizing"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Schema version string. Increment on breaking changes."
+    },
+    "as_of": {
+      "type": "string",
+      "description": "Report timestamp, ISO 8601 with timezone. Top-level as_of required by Rule F1 for price vintage classification."
+    },
+    "ticker": {
+      "type": "string",
+      "pattern": "^[A-Z]{1,6}$",
+      "description": "Uppercase ticker symbol, 1–6 characters."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["equity", "muni_bond", "cash"],
+      "description": "Asset class. If present at top level, propagated to current_price by Rule F1 walker to determine staleness thresholds (equity: 26h block; muni_bond: 168h flag; cash: always acceptable)."
+    },
+    "current_price": {
+      "$ref": "#/$defs/SourcedValue",
+      "description": "Live market price. vintage must be within 26h of as_of for equity assets (Rule F1). source satisfies Rule S1."
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["p5", "p25", "p50", "p75", "p95"],
+      "properties": {
+        "p5":  {"$ref": "#/$defs/SourcedValue", "description": "Bear floor (5th percentile)."},
+        "p25": {"$ref": "#/$defs/SourcedValue", "description": "Lower quartile; strong-buy zone upper bound."},
+        "p50": {"$ref": "#/$defs/SourcedValue", "description": "Median / base case price."},
+        "p75": {"$ref": "#/$defs/SourcedValue", "description": "Upper quartile; trim trigger level."},
+        "p95": {"$ref": "#/$defs/SourcedValue", "description": "Bull ceiling (95th percentile); exit trigger level."}
+      },
+      "additionalProperties": false,
+      "description": "Price distribution percentile anchors from the StockEval scenario engine. Vintage reflects when the analysis was generated."
+    },
+    "expected_return": {
+      "$ref": "#/$defs/DerivedValue",
+      "description": "Probability-weighted expected return across bear/base/bull scenarios. formula = weighted sum of (scenario_price/current_price - 1). Rule N1 verifies formula against stored value within ±0.001 or ±0.5%."
+    },
+    "entry_strategy": {
+      "type": "object",
+      "required": ["current_zone_logic", "ideal_buy_price", "trim_zone_above", "exit_zone_above"],
+      "properties": {
+        "current_zone_logic": {
+          "type": "string",
+          "enum": ["current_below_p25", "current_between_p25_p50", "current_above_p50"],
+          "description": "Classification of current price relative to distribution. Drives zone presence: strong_buy_zone only present when current_below_p25 or current_between_p25_p50."
+        },
+        "strong_buy_zone": {
+          "oneOf": [
+            {"$ref": "#/$defs/PriceZone"},
+            {"type": "null"}
+          ],
+          "description": "Aggressive entry range [p5, current]. Null when current_zone_logic = current_above_p50. Invariant (Rule E1, future): high <= current_price.value."
+        },
+        "ideal_buy_price": {
+          "type": "number",
+          "description": "Optimal single-entry price point. Invariant (Rule E1, future): <= current_price.value."
+        },
+        "starter_zone": {
+          "oneOf": [
+            {"$ref": "#/$defs/PriceZone"},
+            {"type": "null"}
+          ],
+          "description": "Conservative first-tranche range. Null when current_zone_logic = current_above_p50. Invariant (Rule E1, future): high <= current_price.value."
+        },
+        "trim_zone_above": {
+          "type": "number",
+          "description": "Trim trigger price level (typically p75). Reduce position when price exceeds this."
+        },
+        "exit_zone_above": {
+          "type": "number",
+          "description": "Full-exit trigger price level (typically p95)."
+        }
+      },
+      "description": "Entry zones and price-level triggers. Cross-field invariants (ideal_buy_price <= current_price.value; zone highs <= current_price.value) are documented here and will be enforced by Rule E1 in a future block."
+    },
+    "position_sizing": {
+      "type": "object",
+      "required": [
+        "target_size_pct",
+        "recommended_now_pct",
+        "conviction",
+        "entry_style",
+        "tranche_count"
+      ],
+      "properties": {
+        "target_size_pct": {
+          "allOf": [
+            {"$ref": "#/$defs/DerivedValue"},
+            {
+              "properties": {
+                "value": {
+                  "minimum": 0.5,
+                  "maximum": 5.0
+                }
+              }
+            }
+          ],
+          "description": "Target portfolio allocation percentage. Range: 0.5–5.0. Derived from conviction level and Kelly inputs in v2; constant in v1."
+        },
+        "recommended_now_pct": {
+          "$ref": "#/$defs/DerivedValue",
+          "description": "Initial tranche allocation percentage. formula = target_size_pct.value / tranche_count (expressed as numeric literals). Rule N1 verifies."
+        },
+        "conviction": {
+          "type": "string",
+          "enum": ["High", "Medium", "Low"],
+          "description": "Qualitative conviction level. Low: max target 2%; High: min target 2%."
+        },
+        "entry_style": {
+          "type": "string",
+          "enum": ["aggressive", "staged", "wait"],
+          "description": "Execution approach. aggressive: full position now; staged: tranches; wait: no entry."
+        },
+        "tranche_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Number of planned entry tranches for staged execution."
+        }
+      },
+      "description": "Portfolio sizing parameters. DerivedValues satisfy Rule S1 (derived: true) and Rule N1 (formula)."
+    },
+    "upstream": {
+      "type": "object",
+      "required": ["stockeval_layer2_hash", "stockeval_layer2_vintage"],
+      "properties": {
+        "stockeval_layer2_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "SHA-256 hex digest (prefix 'sha256:') of the StockEval Layer 2 JSON that produced this output. Change detection: if upstream reruns, hash changes and this document must be regenerated."
+        },
+        "stockeval_layer2_vintage": {
+          "type": "string",
+          "description": "ISO 8601 timestamp when the upstream StockEval analysis was generated."
+        }
+      },
+      "description": "Audit trail linking this output to its upstream input. Enables detection of stale derivations when Layer 2 data is refreshed."
+    }
+  },
+  "$defs": {
+    "SourcedValue": {
+      "type": "object",
+      "required": ["value", "source", "vintage"],
+      "properties": {
+        "value":   {"type": "number"},
+        "source":  {
+          "type": "string",
+          "description": "Provenance label (e.g. 'FMP', 'stockeval_pdf_2026-04-22'). Satisfies Rule S1."
+        },
+        "vintage": {
+          "type": "string",
+          "description": "ISO 8601 timestamp or date. Rule F1 uses this on price objects."
+        },
+        "derived": {"type": "boolean"}
+      },
+      "description": "A numeric value with explicit source attribution and data vintage. Satisfies Rule S1 via source field. Rule F1 applies to any SourcedValue whose JSON path leaf contains 'price'."
+    },
+    "DerivedValue": {
+      "type": "object",
+      "required": ["value", "formula", "derived"],
+      "properties": {
+        "value": {"type": "number"},
+        "formula": {
+          "type": "string",
+          "description": "Arithmetic expression: operators +  -  *  /  numeric literals and parentheses only. No variables. Evaluated by Rule N1 against stored value within ±0.001 or ±0.5%."
+        },
+        "derived": {
+          "const": true,
+          "description": "Must be true. Satisfies Rule S1 derived-value exemption."
+        },
+        "source": {
+          "type": "string",
+          "description": "Optional attribution for the formula methodology itself."
+        }
+      },
+      "description": "A numeric value computed from a pure arithmetic formula. Satisfies Rule S1 (derived: true) and Rule N1 (formula evaluated and compared to value)."
+    },
+    "PriceZone": {
+      "type": "object",
+      "required": ["low", "high"],
+      "properties": {
+        "low":  {"type": "number"},
+        "high": {"type": "number"}
+      },
+      "description": "A price range [low, high]. Invariant: high >= low. Cross-property constraints are not expressible in JSON Schema; enforced by Rule E1 (future)."
+    }
+  }
+}

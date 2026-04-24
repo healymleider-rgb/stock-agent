@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "as_of": "2026-04-22T13:52:00Z",
+  "ticker": "MSFT",
+  "kind": "equity",
+
+  "current_price": {
+    "value": 431.22,
+    "source": "stockeval_pdf_2026-04-22",
+    "vintage": "2026-04-22T13:52:00Z"
+  },
+
+  "distribution": {
+    "p5":  {"value": 305.86, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T13:52:00Z"},
+    "p25": {"value": 391.26, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T13:52:00Z"},
+    "p50": {"value": 493.16, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T13:52:00Z"},
+    "p75": {"value": 625.12, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T13:52:00Z"},
+    "p95": {"value": 731.29, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T13:52:00Z"}
+  },
+
+  "expected_return": {
+    "value": 0.1731,
+    "formula": "0.25 * (305.86/431.22 - 1) + 0.50 * (493.16/431.22 - 1) + 0.25 * (731.29/431.22 - 1)",
+    "derived": true,
+    "source": "weighted_scenario_return_formula"
+  },
+
+  "entry_strategy": {
+    "current_zone_logic": "current_between_p25_p50",
+    "strong_buy_zone": {"low": 305.86, "high": 391.26},
+    "ideal_buy_price": 391.26,
+    "starter_zone": {"low": 391.26, "high": 431.22},
+    "trim_zone_above": 625.12,
+    "exit_zone_above": 731.29
+  },
+
+  "position_sizing": {
+    "target_size_pct": {
+      "value": 3.0,
+      "formula": "3.0",
+      "derived": true,
+      "source": "advisor_input_v1"
+    },
+    "recommended_now_pct": {
+      "value": 1.0,
+      "formula": "3.0 / 3",
+      "derived": true,
+      "source": "target_size_pct / tranche_count"
+    },
+    "conviction": "Medium",
+    "entry_style": "staged",
+    "tranche_count": 3
+  },
+
+  "upstream": {
+    "stockeval_layer2_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "stockeval_layer2_vintage": "2026-04-22T13:00:00Z"
+  }
+}

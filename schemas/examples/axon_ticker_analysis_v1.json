@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "as_of": "2026-04-22T15:31:00Z",
+  "ticker": "AXON",
+  "kind": "equity",
+
+  "current_price": {
+    "value": 395.95,
+    "source": "stockeval_pdf_2026-04-22",
+    "vintage": "2026-04-22T15:31:00Z"
+  },
+
+  "distribution": {
+    "p5":  {"value": 304.96, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T15:31:00Z"},
+    "p25": {"value": 350.66, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T15:31:00Z"},
+    "p50": {"value": 403.84, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T15:31:00Z"},
+    "p75": {"value": 482.99, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T15:31:00Z"},
+    "p95": {"value": 545.34, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T15:31:00Z"}
+  },
+
+  "expected_return": {
+    "value": 0.0468,
+    "formula": "0.25 * (304.96/395.95 - 1) + 0.50 * (403.84/395.95 - 1) + 0.25 * (545.34/395.95 - 1)",
+    "derived": true,
+    "source": "weighted_scenario_return_formula"
+  },
+
+  "entry_strategy": {
+    "current_zone_logic": "current_between_p25_p50",
+    "strong_buy_zone": {"low": 304.96, "high": 339.24},
+    "ideal_buy_price": 339.24,
+    "starter_zone": {"low": 339.24, "high": 395.95},
+    "trim_zone_above": 482.99,
+    "exit_zone_above": 545.34
+  },
+
+  "position_sizing": {
+    "target_size_pct": {
+      "value": 1.5,
+      "formula": "1.5",
+      "derived": true,
+      "source": "advisor_input_v1"
+    },
+    "recommended_now_pct": {
+      "value": 0.0,
+      "formula": "0.0",
+      "derived": true,
+      "source": "hold_thesis_zero_sizing"
+    },
+    "conviction": "Low",
+    "entry_style": "wait",
+    "tranche_count": 3
+  },
+
+  "upstream": {
+    "stockeval_layer2_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "stockeval_layer2_vintage": "2026-04-22T15:00:00Z"
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "as_of": "2026-04-22T10:30:00Z",
+  "ticker": "NFLX",
+  "kind": "equity",
+
+  "current_price": {
+    "value": 92.58,
+    "source": "stockeval_pdf_2026-04-22",
+    "vintage": "2026-04-21T16:00:00Z"
+  },
+
+  "distribution": {
+    "p5":  {"value":  76.75, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T10:30:00Z"},
+    "p25": {"value": 100.10, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T10:30:00Z"},
+    "p50": {"value": 125.17, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T10:30:00Z"},
+    "p75": {"value": 158.57, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T10:30:00Z"},
+    "p95": {"value": 185.44, "source": "stockeval_pdf_2026-04-22", "vintage": "2026-04-22T10:30:00Z"}
+  },
+
+  "expected_return": {
+    "value": 0.384,
+    "formula": "0.25 * (76.75/92.58 - 1) + 0.50 * (125.17/92.58 - 1) + 0.25 * (185.44/92.58 - 1)",
+    "derived": true,
+    "source": "weighted_scenario_return_formula"
+  },
+
+  "entry_strategy": {
+    "current_zone_logic": "current_below_p25",
+    "strong_buy_zone": {"low": 76.75, "high": 92.58},
+    "ideal_buy_price": 92.58,
+    "starter_zone": {"low": 92.58, "high": 115.49},
+    "trim_zone_above": 158.57,
+    "exit_zone_above": 185.44
+  },
+
+  "position_sizing": {
+    "target_size_pct": {
+      "value": 1.5,
+      "formula": "1.5",
+      "derived": true,
+      "source": "advisor_input_v1"
+    },
+    "recommended_now_pct": {
+      "value": 0.5,
+      "formula": "1.5 / 3",
+      "derived": true,
+      "source": "target_size_pct / tranche_count"
+    },
+    "conviction": "Low",
+    "entry_style": "staged",
+    "tranche_count": 3
+  },
+
+  "upstream": {
+    "stockeval_layer2_hash": "sha256:9177b8c1ab012c1fc9a8be5e498315cf9f3f19e202b900b442a6ff8111adb82d",
+    "stockeval_layer2_vintage": "2026-04-22T10:00:00Z"
+  }
+}

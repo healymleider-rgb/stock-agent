@@ -164,7 +164,8 @@ def analyze_ticker(layer2: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str
         "source":  "advisor_input_v1",
     }
 
-    if zone == "current_above_p50":
+    no_position = (target_val == 0.0) or (zone == "current_above_p50")
+    if no_position:
         rec_now_val     = 0.0
         rec_now_formula = "0.0"
     else:
@@ -181,11 +182,10 @@ def analyze_ticker(layer2: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str
     raw_conviction = exec_block.get("conviction", "")
     conviction = raw_conviction if raw_conviction in ("High", "Medium", "Low") else "Low"
 
-    # entry_style: "wait" above P50; otherwise "staged".
-    # Momentum score is not yet threaded through the snapshot — defaulting to
-    # "staged" for all non-above-P50 cases.  Known gap: wire momentum score
-    # in a later iteration to distinguish "staged" from "aggressive".
-    entry_style = "wait" if zone == "current_above_p50" else "staged"
+    # entry_style: "wait" when no position is recommended (target=0 or above P50);
+    # "staged" otherwise.  Known gap: wire momentum score in a later iteration
+    # to distinguish "staged" from "aggressive".
+    entry_style = "wait" if no_position else "staged"
 
     position_sizing: Dict[str, Any] = {
         "target_size_pct":     target_size_pct,

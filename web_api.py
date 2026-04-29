@@ -12,16 +12,19 @@ Run with:
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
+from jsonschema import Draft202012Validator
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -30,6 +33,7 @@ from agents.orchestrator_agent import OrchestratorAgent
 from agents.reporting_agent import ReportingAgent
 from analysis.metrics import NormalizedMetrics, compute_core_metrics
 from analysis.peer_comparison import build_peer_comparison
+from analysis.ticker_analyzer import analyze_ticker as _analyze_ticker
 from analysis.validation_gate import ValidationGate
 from memory.evaluation_memory import EvaluationMemory
 from models.scorecard import Scorecard
@@ -779,6 +783,7 @@ def _run_evaluation(job_id: str, ticker: str) -> None:
             "quant_engine":   _extract_quant_engine(state),
             "evaluated_at":   _as_of,
             "validation_log": _vlog_to_dict(_vlog),
+            "snapshot":       _snapshot,
             **reporting_extras,
         }
 
@@ -844,6 +849,114 @@ def get_job(job_id: str) -> dict:
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found.")
     return _jobs[job_id]
+
+
+_ANALYZE_SCHEMA_PATH = Path("schemas/ticker_analysis_v1.schema.json")
+_analyze_schema: dict | None = None
+
+def _get_analyze_schema() -> dict:
+    global _analyze_schema
+    if _analyze_schema is None:
+        _analyze_schema = json.loads(_ANALYZE_SCHEMA_PATH.read_text())
+    return _analyze_schema
+
+
+@app.get("/api/analyze/{ticker}")
+def analyze_ticker_endpoint(ticker: str, job_id: str) -> dict:
+    """
+    Phase 2 Step 2 — produce and validate a ticker_analysis_v1 document.
+
+    Reads the snapshot from a completed evaluation job, loads the
+    corresponding Layer 2 JSON from data/layer2/, calls analyze_ticker(),
+    validates against the schema and N1/F1/S1 rules, and returns the
+    analysis plus a validation_summary.
+    """
+    ticker = ticker.upper().strip()
+    if not ticker.isalpha() or len(ticker) > 10:
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol")
+
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job["status"] not in ("complete", "qualified"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is {job['status']}; must be complete or qualified",
+        )
+
+    result = job.get("result") or {}
+    snapshot = result.get("snapshot")
+    if not snapshot:
+        raise HTTPException(
+            status_code=500,
+            detail="Job has no snapshot in result (server-side issue)",
+        )
+
+    snap_ticker = (snapshot.get("ticker") or "").upper()
+    if snap_ticker and snap_ticker != ticker:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ticker mismatch: requested {ticker}, job snapshot is for {snap_ticker}",
+        )
+
+    layer2_path = Path(f"data/layer2/{ticker}_layer2.json")
+    if not layer2_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Layer 2 missing for {ticker}; run extract_inputs.py first",
+        )
+    try:
+        with open(layer2_path) as f:
+            layer2 = json.load(f)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Layer 2 JSON malformed for {ticker}: {e}",
+        )
+
+    try:
+        analysis = _analyze_ticker(layer2, snapshot)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"analyze_ticker failed: {type(e).__name__}: {e}",
+        )
+
+    schema = _get_analyze_schema()
+    validator = Draft202012Validator(schema)
+    schema_errors = [
+        {"path": list(e.path), "message": e.message}
+        for e in validator.iter_errors(analysis)
+    ]
+
+    gate = ValidationGate()
+    n1 = gate._b8_numerical_invariants(analysis)
+    f1 = gate._b9_price_freshness(analysis)
+    s1 = gate._b10_source_attribution(analysis)
+
+    return {
+        "ticker": ticker,
+        "job_id": job_id,
+        "analysis": analysis,
+        "validation_summary": {
+            "schema_valid": len(schema_errors) == 0,
+            "schema_errors": schema_errors,
+            "n1": {
+                "passed": n1.passed,
+                "corrections": len(n1.corrections),
+                "metadata": dict(n1.metadata),
+            },
+            "f1": {
+                "passed": f1.passed,
+                "metadata": dict(f1.metadata),
+            },
+            "s1": {
+                "passed": s1.passed,
+                "unsourced_count": s1.metadata.get("unsourced_count", 0),
+                "metadata": dict(s1.metadata),
+            },
+        },
+    }
 
 
 @app.get("/api/history/{ticker}")

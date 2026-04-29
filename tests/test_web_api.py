@@ -8,6 +8,7 @@ seconds per ticker).
 """
 import sys
 import os
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -88,3 +89,86 @@ def test_evaluate_override_without_force_ignores_justification():
     job_id = resp.json()["job_id"]
 
     assert _jobs[job_id]["force_validation_override"] is False
+
+
+# ── /api/analyze/{ticker} contract tests ─────────────────────────────────────
+
+_SYNTHETIC_SNAPSHOT = {
+    "ticker": "AXON",
+    "as_of_date": "2026-04-29T15:00:00Z",
+    "kind": "equity",
+    "price": {
+        "value":   395.95,
+        "source":  "FMP",
+        "vintage": "2026-04-29T14:55:00Z",
+    },
+    "distribution": {
+        "mode": "monte_carlo",
+        "percentiles": {
+            "p5":  304.96,
+            "p25": 350.66,
+            "p50": 403.84,
+            "p75": 482.99,
+            "p95": 545.34,
+        },
+    },
+    "execution": {
+        "target_size_pct": 1.5,
+        "conviction": "Low",
+    },
+}
+
+
+def _make_complete_job(ticker: str, snapshot: dict) -> str:
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {
+        "status": "complete",
+        "progress": 100,
+        "step": "Report ready",
+        "result": {"snapshot": snapshot},
+        "error": None,
+        "force_validation_override": False,
+        "force_justification": "",
+    }
+    return job_id
+
+
+def test_analyze_endpoint_400_on_invalid_ticker():
+    resp = client.get("/api/analyze/123/?job_id=anything")
+    assert resp.status_code in (400, 404)
+
+
+def test_analyze_endpoint_404_on_missing_job():
+    resp = client.get("/api/analyze/PYPL?job_id=nonexistent-job-id")
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
+
+
+def test_analyze_endpoint_409_on_incomplete_job():
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {
+        "status": "pending", "progress": 0, "step": "Queued",
+        "result": None, "error": None,
+        "force_validation_override": False, "force_justification": "",
+    }
+    resp = client.get(f"/api/analyze/PYPL?job_id={job_id}")
+    assert resp.status_code == 409
+
+
+def test_analyze_endpoint_returns_valid_analysis_for_complete_job():
+    job_id = _make_complete_job("AXON", _SYNTHETIC_SNAPSHOT)
+    resp = client.get(f"/api/analyze/AXON?job_id={job_id}")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    assert payload["ticker"] == "AXON"
+    assert payload["job_id"] == job_id
+    assert "analysis" in payload
+    assert payload["analysis"]["ticker"] == "AXON"
+
+    vs = payload["validation_summary"]
+    assert vs["schema_valid"] is True, f"Schema errors: {vs['schema_errors']}"
+    assert vs["n1"]["passed"]
+    assert vs["f1"]["passed"]
+    assert vs["s1"]["passed"]
+    assert vs["s1"]["unsourced_count"] == 0

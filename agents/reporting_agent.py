@@ -3307,9 +3307,10 @@ class ReportingAgent(BaseAgent):
         if len(revenues) < 2:
             return None
 
-        # CAGR helper
+        # CAGR helper — returns None when either endpoint is non-positive because
+        # (negative/positive)**fraction is complex in Python.
         def _cagr(start: float, end: float, periods: int) -> float | None:
-            if start <= 0 or end is None or periods < 1:
+            if start is None or start <= 0 or end is None or end <= 0 or periods < 1:
                 return None
             try:
                 return (end / start) ** (1.0 / periods) - 1.0

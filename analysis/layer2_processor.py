@@ -305,9 +305,11 @@ def _classify(inp: Dict[str, Any]) -> Tuple[List[str], str, str, List[str]]:
     if eps_cur is not None and eps_26 is not None:
         cagr_str = f"${eps_cur:.2f} → ${eps_26:.2f}"
         flags.append(f"EPS Y0 → Y1: {cagr_str}.")
-    if eps_26 is not None and eps_28 is not None and eps_26 > 0:
+    if eps_26 is not None and eps_28 is not None and eps_26 > 0 and eps_28 > 0:
         cagr_2yr = (eps_28 / eps_26) ** 0.5 - 1
         flags.append(f"EPS Y1→Y3 CAGR: {cagr_2yr:.1%} ({eps_26:.2f} → {eps_28:.2f}).")
+    elif eps_26 is not None and eps_28 is not None and eps_28 <= 0:
+        flags.append(f"EPS Y1→Y3: ${eps_26:.2f} → ${eps_28:.2f} (negative forward earnings — CAGR not applicable).")
     if eps_27 is not None and eps_28 is not None and eps_27 > 0 and eps_28 < eps_27:
         flags.append(
             f"EPS Y2→Y3 regression: ${eps_27:.2f} → ${eps_28:.2f} — "

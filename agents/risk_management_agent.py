@@ -33,7 +33,10 @@ class RiskManagementAgent(BaseAgent):
         # via prior_findings so the risk scorer uses the same market_cap, PE,
         # and D/E values as the valuation scorecard and report header.
         prior_findings = message.payload.get("prior_findings", {})
-        norm_metrics = prior_findings.get("fundamental", {}).get("normalized_metrics")
+        fund_findings  = prior_findings.get("fundamental", {})
+        norm_metrics   = fund_findings.get("normalized_metrics")
+        validation     = fund_findings.get("validation")
+
         if norm_metrics is not None:
             print(
                 f"  [RISK AGENT] using NormalizedMetrics:"
@@ -44,8 +47,18 @@ class RiskManagementAgent(BaseAgent):
         else:
             print("  [RISK AGENT] NormalizedMetrics not available — falling back to raw stock_data")
 
+        if validation is not None:
+            print(
+                f"  [RISK AGENT] ValidationResult:"
+                f" flags={len(validation.flags)}"
+                f" conviction_penalty={validation.conviction_penalty}"
+                f" coverage={validation.data_coverage:.0%}"
+            )
+
         weight                 = Config.SCORE_WEIGHTS["risk"]
-        risk_score, risk_flags = score_risk(stock_data, weight=weight, metrics=norm_metrics)
+        risk_score, risk_flags = score_risk(
+            stock_data, weight=weight, metrics=norm_metrics, validation=validation
+        )
 
         critical = [
             f for f in risk_flags

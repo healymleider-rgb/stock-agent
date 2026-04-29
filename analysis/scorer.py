@@ -80,10 +80,10 @@ def _apply_macro_overlay(sc: Scorecard, macro: dict) -> None:
     if rec_risk == "High":
         if sc.stance == Stance.BULLISH:
             sc.stance = Stance.NEUTRAL
-            sc.bearish_factors.insert(0, "Macro: High recession risk — Bullish stance tempered to Neutral")
+            sc.bearish_factors.insert(0, "Macro: High recession risk — Buy rating tempered to Hold")
         elif sc.stance == Stance.NEUTRAL:
             sc.stance = Stance.BEARISH
-            sc.bearish_factors.insert(0, "Macro: High recession risk — Neutral stance downgraded to Bearish")
+            sc.bearish_factors.insert(0, "Macro: High recession risk — Hold rating downgraded to Sell")
 
     print(
         f"  [MacroOverlay] final stance: {sc.stance.value!r}"
@@ -273,26 +273,138 @@ def build_scorecard(
         )
 
     # ── What would change the view ────────────────────────────────────────────
-    if sc.stance.value == "Bullish":
-        sc.what_would_change_view = [
-            "Material deterioration in revenue growth or margins",
-            "Significant increase in leverage or debt taken on",
-            "Breakdown below 200-day moving average on heavy volume",
-            "Earnings miss or guidance cut in the next 1-2 quarters",
-        ]
-    elif sc.stance.value == "Bearish":
-        sc.what_would_change_view = [
-            "Return to positive free cash flow generation",
-            "Evidence of revenue stabilization or reacceleration",
-            "Successful balance sheet deleveraging",
-            "Multiple positive earnings surprises that reset expectations",
-        ]
-    else:
-        sc.what_would_change_view = [
-            "Sustained revenue growth acceleration above 15%",
-            "Clear margin expansion over two or more consecutive quarters",
-            "A catalyst event: new product, partnership, or market share gain",
-            "Significant deterioration in fundamentals would shift view to Bearish",
-        ]
+    # Data-driven: built from actual category scores, not stance templates.
+    # MemoEngine._change_view_bullets() will further reframe any that describe
+    # conditions already true, and supplement if fewer than 3 are generated here.
+    sc.what_would_change_view = _build_triggers(sc)
 
     return sc
+
+
+def _build_triggers(sc: "Scorecard") -> list[str]:
+    """
+    Generate forward-looking change-view triggers from actual category scores.
+
+    Rules:
+    · Bullish stance → triggers that would BREAK the bull thesis
+    · Bearish/Neutral → triggers that would IMPROVE the view
+    · Every trigger references a metric category visible in the scorecard
+    · Generic stance-agnostic templates are banned here (MemoEngine handles fallback)
+    """
+    def _s(attr: str) -> "Optional[float]":
+        cat = getattr(sc, attr, None)
+        return cat.score if cat and cat.data_quality != "missing" else None
+
+    g   = _s("growth")
+    p   = _s("profitability")
+    v   = _s("valuation")
+    mom = _s("momentum")
+    fh  = _s("financial_health")
+    stance = sc.stance.value
+
+    triggers: list[str] = []
+
+    if stance == "Bullish":
+        # Describe what would BREAK the bull case
+        if g is not None and g >= 65:
+            triggers.append(
+                "Revenue growth decelerates below consensus for two consecutive quarters."
+            )
+        elif g is not None:
+            triggers.append(
+                "Revenue growth fails to sustain current trajectory over the next two quarters."
+            )
+
+        if p is not None and p >= 65:
+            triggers.append(
+                "Margin compression signals pricing power deterioration or cost discipline failure."
+            )
+        elif p is not None and p < 50:
+            triggers.append(
+                "Profitability fails to recover toward sector median within four quarters."
+            )
+
+        if mom is not None and mom >= 55:
+            triggers.append(
+                "Price sustains a break below the 200-day moving average on above-average volume."
+            )
+
+        if fh is not None and fh < 50:
+            triggers.append(
+                "Balance sheet deterioration triggers a credit rating action or covenant breach."
+            )
+        elif fh is not None and fh >= 60:
+            triggers.append(
+                "Leverage increases materially via debt-funded acquisitions or capital returns."
+            )
+
+        triggers.append(
+            "An earnings miss or guidance cut that materially resets long-term growth expectations."
+        )
+
+    elif stance == "Bearish":
+        # Describe what would IMPROVE the view
+        if g is not None and g < 45:
+            triggers.append(
+                "Revenue stabilises and reaccelerates to at-or-above sector growth rate for two quarters."
+            )
+
+        if p is not None and p < 45:
+            triggers.append(
+                "Gross margin recovers to sector median, demonstrating restored pricing power."
+            )
+
+        if fh is not None and fh < 45:
+            triggers.append(
+                "Debt reduction or balance sheet restructuring restores covenant headroom."
+            )
+
+        if mom is not None and mom < 45:
+            triggers.append(
+                "Price reclaims the 200-day moving average with improving breadth and volume confirmation."
+            )
+
+        if v is not None and v < 45:
+            triggers.append(
+                "Valuation de-rates to within 10% of sector median multiple."
+            )
+
+        triggers.append(
+            "Multiple consecutive earnings beats that materially reset long-term growth expectations."
+        )
+
+    else:  # Neutral / Hold
+        # Describe what would shift the view in either direction
+        if g is not None and g < 55:
+            triggers.append(
+                "Revenue growth acceleration sustained above sector rate for two consecutive quarters."
+            )
+        else:
+            triggers.append(
+                "Revenue growth decelerates below sector rate, signalling thesis deterioration."
+            )
+
+        if p is not None:
+            if p >= 55:
+                triggers.append(
+                    "Significant margin compression that erodes the quality premium and narrows the earnings base."
+                )
+            else:
+                triggers.append(
+                    "Margin expansion to above sector median would support a rating upgrade."
+                )
+
+        if v is not None and v < 45:
+            triggers.append(
+                "Valuation re-rates to within 15% of sector median, improving the risk/reward profile."
+            )
+        elif v is not None and v >= 65:
+            triggers.append(
+                "Further multiple compression driven by earnings disappointment narrows the margin of safety."
+            )
+
+        triggers.append(
+            "A catalyst event — major contract win, product launch, or market share gain — that resets the earnings trajectory."
+        )
+
+    return triggers[:4]

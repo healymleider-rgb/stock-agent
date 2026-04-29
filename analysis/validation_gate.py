@@ -620,8 +620,13 @@ class ValidationGate:
                 "source":  price_source,
                 "vintage": datetime.now(timezone.utc).isoformat(),
             },
-            "shares_b":     {"value": shares_b,    "source": getattr(m, "shares_source", "") if m else "",
-                             "reporting_period": shares_period},
+            "shares_b": {
+                "value":            shares_b,
+                "source":           getattr(m, "shares_source", "") if m else "",
+                "reporting_period": shares_period,
+                "filing_date":      getattr(m, "shares_filing_date", None) if m else None,
+                "filing_url":       getattr(m, "shares_filing_url", None) if m else None,
+            },
             "market_cap_b": {
                 "api":      api_mktcap_b,
                 "computed": comp_mktcap_b,

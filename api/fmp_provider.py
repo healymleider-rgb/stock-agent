@@ -55,8 +55,37 @@ class FMPProvider(DataProvider):
             market_cap = profile.market_cap
 
         # Extract shares outstanding and compute cross-check market cap.
-        # FMP /quote includes sharesOutstanding (shares × current price = market cap).
+        # Primary: FMP /quote sharesOutstanding — currently returns None on the
+        # stable API for all tickers tested (AXON, PYPL, CVX).
+        # Fallback: /shares-float — SEC EDGAR-sourced outstandingShares; updated
+        # within days of 10-K/10-Q filing. Far more accurate than NI/EPS derivation.
         shares_outstanding = safe_float(quote.get("sharesOutstanding"))
+        shares_source: str = "FMP/quote sharesOutstanding"
+        shares_filing_period_end: Optional[str] = None
+        shares_filing_url: Optional[str] = None
+        shares_data_refreshed_at: Optional[str] = None
+
+        if shares_outstanding is None:
+            try:
+                float_data = self._client.fetch_shares_float(ticker)
+                if float_data:
+                    shares_outstanding       = float_data["shares"]
+                    shares_source            = float_data["source"]
+                    shares_filing_period_end = float_data["filing_period_end"]
+                    shares_filing_url        = float_data["filing_url"]
+                    shares_data_refreshed_at = float_data["data_refreshed_at"]
+                    logger.info(
+                        "FMPProvider [%s]: /quote sharesOutstanding=None — "
+                        "using /shares-float SEC source: %s shares (period end %s)",
+                        ticker, f"{shares_outstanding:,.0f}", shares_filing_period_end,
+                    )
+            except FMPError as exc:
+                logger.warning(
+                    "FMPProvider [%s]: /shares-float failed (%s) — "
+                    "NI/EPS fallback will apply in metrics.py",
+                    ticker, exc,
+                )
+
         market_cap_computed: Optional[float] = None
         if shares_outstanding and current_price and current_price > 0:
             market_cap_computed = round(shares_outstanding * current_price, 0)
@@ -90,6 +119,10 @@ class FMPProvider(DataProvider):
             shares_outstanding=shares_outstanding,
             market_cap_computed=market_cap_computed,
             quote=quote,
+            shares_source=shares_source,
+            shares_filing_period_end=shares_filing_period_end,
+            shares_filing_url=shares_filing_url,
+            shares_data_refreshed_at=shares_data_refreshed_at,
         )
 
     def get_financials(self, ticker: str, limit: int = 5) -> FinancialsResult:

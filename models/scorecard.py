@@ -64,6 +64,12 @@ class Scorecard:
     # data-availability confidence with cross-factor agreement confidence.
     confidence_explanation: str = ""
 
+    # Structured position sizing output — set by ReportingAgent.
+    # Keys: position_range, position_lo, position_hi, entry_strategy,
+    #       entry_detail, rationale, conviction_tier, setup_quality,
+    #       hard_cap_reason (str | None).
+    position_sizing: dict = field(default_factory=dict)
+
     def compute_overall_score(self) -> float:
         """Weighted average of all non-None category scores."""
         categories = [

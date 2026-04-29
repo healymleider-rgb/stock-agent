@@ -1,0 +1,91 @@
+{
+  "ticker": "QXO",
+  "model_date": "2026-04-21",
+  "excel_base_case": {
+    "current_price": 12.0,
+    "revenue_growth": 0.3662,
+    "gross_margin_current": 0.168,
+    "net_margin_current": null,
+    "eps_current": -0.633,
+    "eps_forward": {
+      "y1_2026": 0.4,
+      "y2_2027": 0.71,
+      "y3_2028": 1.02
+    },
+    "price_target_base": 14.74,
+    "price_target_low": 1.56,
+    "price_target_high": 29.32,
+    "implied_multiple": 36.85,
+    "pe_range_low": 3.9,
+    "pe_range_high": 73.29,
+    "wacc": null,
+    "beta": null
+  },
+  "model_diagnostics": {
+    "model_type": [
+      "turnaround"
+    ],
+    "primary_driver": "turnaround",
+    "assumption_quality": "medium",
+    "flags": [
+      "EPS_CURRENT=-0.6330 < 0 \u2014 turnaround classification.",
+      "EPS Y0 \u2192 Y1: $-0.63 \u2192 $0.40.",
+      "EPS Y1\u2192Y3 CAGR: 59.7% (0.40 \u2192 1.02)."
+    ],
+    "consistency_check": {
+      "eps_times_multiple": 14.74,
+      "price_target_base": 14.74,
+      "deviation_pct": 0.0,
+      "passed": true
+    }
+  },
+  "normalized_assumptions": {
+    "growth_mean": 0.3662,
+    "growth_range": 0.24,
+    "margin_mean": 0.168,
+    "margin_range": 0.16,
+    "multiple_center": 36.85,
+    "multiple_range": 29.48
+  },
+  "scenario_mapping": {
+    "bear": {
+      "growth": 0.2462,
+      "margin": 0.088,
+      "multiple": 22.11,
+      "implied_price_target": 8.84
+    },
+    "base": {
+      "growth": 0.3662,
+      "margin": 0.168,
+      "multiple": 36.85,
+      "implied_price_target": 14.74
+    },
+    "bull": {
+      "growth": 0.4862,
+      "margin": 0.248,
+      "multiple": 51.59,
+      "implied_price_target": 20.64
+    }
+  },
+  "monte_carlo_mapping": {
+    "growth": {
+      "distribution": "skewed-right",
+      "mean": 0.3662,
+      "sigma": 0.08,
+      "skew": 0.5
+    },
+    "margin": {
+      "distribution": "skewed-right",
+      "mean": 0.168,
+      "sigma": 0.0533,
+      "skew": 0.5
+    },
+    "multiple": {
+      "distribution": "log-normal",
+      "mean": 36.85,
+      "sigma": 9.8267,
+      "skew": 1.0
+    },
+    "tail_profile": "wide"
+  }
+}

@@ -47,13 +47,28 @@ Notes
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Optional, Tuple
 
 import requests
 
 from config import Config
 from utils.logger import logger
+
+
+class StaleMacroError(Exception):
+    """
+    Raised when a macro indicator's observation date is too old to be
+    used in a fresh analysis.  The message includes the series ID,
+    observation date, and how many days stale it is.
+
+    The exception carries a ``snapshot`` attribute — the full LEI snapshot
+    dict that was built before the check failed.  Callers can catch this
+    error, null out the stale indicator, and continue with degraded data.
+    """
+    def __init__(self, message: str, snapshot: dict | None = None) -> None:
+        super().__init__(message)
+        self.snapshot: dict = snapshot or {}
 
 # ── FRED series ID constants ───────────────────────────────────────────────────
 
@@ -73,7 +88,7 @@ SERIES_JOBLESS_CLAIMS     = "ICSA"          # Initial claims, seasonally adjuste
 
 # Composite leading indicators
 SERIES_CONF_BOARD_LEI     = "USSLIND"       # Conference Board LEI (may need subscription)
-SERIES_OECD_CLI_USA       = "USALOLITONOSTSAM"  # OECD CLI for United States
+SERIES_OECD_CLI_USA       = "USALOLITONOSTSAM"  # OECD CLI for United States (not seasonally adjusted)
 
 _FRED_BASE = "https://api.stlouisfed.org/fred"
 _REQUEST_TIMEOUT = 15  # seconds
@@ -244,6 +259,59 @@ class FREDProvider:
         """
         return self.get_latest_value(SERIES_MFG_EMPLOYMENT)
 
+    def get_series_trend(
+        self,
+        series_id: str,
+        n_periods: int = 3,
+        noise_threshold: float = 0.10,
+    ) -> Optional[str]:
+        """
+        Compute the trend direction for a series from the last n_periods + 1
+        non-null observations.
+
+        Returns:
+          "rising"     — last value > first value by more than noise_threshold
+          "falling"    — last value < first value by more than noise_threshold
+          "inflecting" — direction reversed within the window (mid-point reversal)
+          None         — insufficient data or provider unavailable
+
+        noise_threshold prevents false signals from minor data revisions.
+        Recommended values:
+          OECD CLI (USALOLITONOSTSAM) : 0.15  (values centred on ~100)
+          Yield spread (T10Y2Y)       : 0.10  (percentage points)
+        """
+        if not self.is_available():
+            return None
+
+        obs = self.get_recent_values(series_id, limit=n_periods + 1)
+        # Keep only non-null values
+        values = [o["value"] for o in obs if o["value"] is not None]
+
+        if len(values) < 2:
+            return None
+
+        first, last = values[0], values[-1]
+        delta = last - first
+
+        if abs(delta) <= noise_threshold:
+            # Flat — but check for inflection within the window
+            # (went one direction then reversed back to near-start)
+            if len(values) >= 3:
+                mid = values[len(values) // 2]
+                mid_delta = mid - first
+                if abs(mid_delta) > noise_threshold and (mid_delta * delta) < 0:
+                    return "inflecting"
+            return None  # truly flat, no trend signal
+
+        # Check for inflection: net direction disagrees with mid-point direction
+        if len(values) >= 3:
+            mid = values[len(values) // 2]
+            mid_delta = mid - first
+            if abs(mid_delta) > noise_threshold and (mid_delta * delta) < 0:
+                return "inflecting"
+
+        return "rising" if delta > 0 else "falling"
+
     def get_lei_snapshot(self) -> dict[str, Any]:
         """
         Fetch the latest value for every tracked leading indicator in one call.
@@ -268,6 +336,12 @@ class FREDProvider:
             },
           }
         """
+        # Maximum age for the OECD CLI observation before we flag it as stale.
+        # The OECD publishes the CLI monthly with ~35-day lag, so 45 days allows
+        # one publication cycle of delay.  We complete the full fetch first so
+        # the caller receives the snapshot even when raising StaleMacroError.
+        _CLI_STALENESS_DAYS = 45
+
         snapshot: dict[str, Any] = {}
         obs_dates: dict[str, Optional[str]] = {}
         checks = [
@@ -288,7 +362,61 @@ class FREDProvider:
             )
             logger.info("FREDProvider: %s (%s) → %s", name, series_id, status)
             print(f"  [FRED] {name} ({series_id}) → {status}")
+
         snapshot["_observation_dates"] = obs_dates
+
+        # ── Trend direction for the two primary leading signals ────────────────
+        # n_periods is set per-series frequency:
+        #   OECD CLI (monthly)  → n_periods=3: 3 monthly steps = one quarter
+        #   T10Y2Y (daily)      → n_periods=20: ~1 trading month; daily noise
+        #                          over 4 days is far too small to exceed threshold
+        cli_trend    = self.get_series_trend(
+            SERIES_OECD_CLI_USA,       n_periods=3,  noise_threshold=0.15
+        )
+        spread_trend = self.get_series_trend(
+            SERIES_YIELD_SPREAD_10Y2Y, n_periods=20, noise_threshold=0.10
+        )
+        snapshot["oecd_cli_trend"]      = cli_trend
+        snapshot["yield_spread_trend"]  = spread_trend
+
+        trend_log = (
+            f"oecd_cli_trend={cli_trend or 'N/A'}"
+            f"  yield_spread_trend={spread_trend or 'N/A'}"
+        )
+        logger.info("FREDProvider: trends — %s", trend_log)
+        print(f"  [FRED] trends — {trend_log}")
+
+        # ── OECD CLI staleness gate ───────────────────────────────────────────
+        # Check AFTER the full snapshot is built so the caller receives the
+        # complete snapshot even when the error is raised (attached as exc.snapshot).
+        _cli_value    = snapshot.get("oecd_cli")
+        _cli_obs_date = obs_dates.get("oecd_cli")
+        if _cli_value is not None and _cli_obs_date is not None:
+            try:
+                _obs_dt   = datetime.strptime(_cli_obs_date, "%Y-%m-%d").date()
+                _days_old = (date.today() - _obs_dt).days
+                if _days_old > _CLI_STALENESS_DAYS:
+                    msg = (
+                        f"OECD CLI ({SERIES_OECD_CLI_USA}) observation is {_days_old} days old "
+                        f"(obs date: {_cli_obs_date}, value: {_cli_value}). "
+                        f"Threshold is {_CLI_STALENESS_DAYS} days. "
+                        f"Value may not reflect current conditions — "
+                        f"check FRED for a more recent publication."
+                    )
+                    logger.warning("FREDProvider: StaleMacroError — %s", msg)
+                    print(f"  [FRED] *** STALE CLI ({_days_old}d old) — raising StaleMacroError ***")
+                    raise StaleMacroError(msg, snapshot=snapshot)
+                else:
+                    print(
+                        f"  [FRED] oecd_cli freshness OK: {_days_old}d old "
+                        f"(threshold {_CLI_STALENESS_DAYS}d)"
+                    )
+            except (ValueError, TypeError):
+                logger.warning(
+                    "FREDProvider: could not parse oecd_cli obs_date %r — skipping staleness check",
+                    _cli_obs_date,
+                )
+
         return snapshot
 
     # ── Private HTTP layer ─────────────────────────────────────────────────────

@@ -1,0 +1,94 @@
+{
+  "ticker": "TSLA",
+  "model_date": "2026-04-21",
+  "excel_base_case": {
+    "current_price": 388.39,
+    "revenue_growth": 0.0365,
+    "gross_margin_current": 0.1803,
+    "net_margin_current": 0.0407,
+    "eps_current": 1.0754,
+    "eps_forward": {
+      "y1_2026": 1.41,
+      "y2_2027": 1.95,
+      "y3_2028": 1.57
+    },
+    "price_target_base": 38.07,
+    "price_target_low": 12.69,
+    "price_target_high": 114.21,
+    "implied_multiple": 27.0,
+    "pe_range_low": 9.0,
+    "pe_range_high": 81.0,
+    "wacc": 0.0866,
+    "beta": 1.91
+  },
+  "model_diagnostics": {
+    "model_type": [
+      "cyclical",
+      "binary_fat_tailed"
+    ],
+    "primary_driver": "multiple",
+    "assumption_quality": "high",
+    "flags": [
+      "Beta=1.91 \u2265 1.4 \u2014 classified as cyclical (no historical rev series available).",
+      "Model base PT ($38.07) is -90% below current price ($388.39) \u2014 binary_fat_tailed classification.",
+      "Model base ($38.07) is -90.2% vs current price ($388.39).",
+      "EPS Y0 \u2192 Y1: $1.08 \u2192 $1.41.",
+      "EPS Y1\u2192Y3 CAGR: 5.5% (1.41 \u2192 1.57)."
+    ],
+    "consistency_check": {
+      "eps_times_multiple": 38.07,
+      "price_target_base": 38.07,
+      "deviation_pct": 0.0,
+      "passed": true
+    }
+  },
+  "normalized_assumptions": {
+    "growth_mean": 0.0365,
+    "growth_range": 0.4,
+    "margin_mean": 0.1803,
+    "margin_range": 0.24,
+    "multiple_center": 27.0,
+    "multiple_range": 32.4
+  },
+  "scenario_mapping": {
+    "bear": {
+      "growth": -0.1635,
+      "margin": 0.0603,
+      "multiple": 10.8,
+      "implied_price_target": 15.23
+    },
+    "base": {
+      "growth": 0.0365,
+      "margin": 0.1803,
+      "multiple": 27.0,
+      "implied_price_target": 38.07
+    },
+    "bull": {
+      "growth": 0.2365,
+      "margin": 0.3003,
+      "multiple": 43.2,
+      "implied_price_target": 60.91
+    }
+  },
+  "monte_carlo_mapping": {
+    "growth": {
+      "distribution": "fat-tailed",
+      "mean": 0.0365,
+      "sigma": 0.1333,
+      "skew": 0.0
+    },
+    "margin": {
+      "distribution": "fat-tailed",
+      "mean": 0.1803,
+      "sigma": 0.08,
+      "skew": 0.0
+    },
+    "multiple": {
+      "distribution": "fat-tailed",
+      "mean": 27.0,
+      "sigma": 10.8,
+      "skew": 0.0
+    },
+    "tail_profile": "fat-tailed"
+  }
+}

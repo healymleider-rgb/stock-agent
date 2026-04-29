@@ -31,6 +31,14 @@ _PS_THRESHOLDS    = [(0.5, 95), (1.5, 82), (3, 68), (5, 55), (8, 40), (15, 25), 
 _FCF_THRESHOLDS   = [(0.01, 35), (0.03, 50), (0.05, 65), (0.08, 80), (0.12, 92), (0.99, 95)]
 _PB_THRESHOLDS    = [(1, 90), (2, 78), (4, 62), (8, 45), (15, 28), (999, 15)]
 
+# PEG thresholds — higher score = cheaper relative to growth
+# PEG < 1.0 typically considered attractive; > 2.0 expensive
+_PEG_THRESHOLDS   = [(0.5, 92), (0.75, 82), (1.0, 70), (1.25, 60), (1.5, 50), (2.0, 36), (2.5, 24), (999, 12)]
+
+# PEG sub-score weight caps
+_PEG_WEIGHT_NORMAL  = 0.15   # max 15% of valuation score
+_PEG_WEIGHT_FLAGGED = 0.05   # capped at 5% when LOW_GROWTH_QUALITY detected
+
 
 def _score_from_thresholds(value: float, thresholds: list[tuple]) -> float:
     sorted_t = sorted(thresholds, key=lambda x: x[0])
@@ -83,6 +91,60 @@ def _pb_score(pb: Optional[float]) -> tuple[float, str]:
         return 50.0, "P/B not available"
     score = _score_from_thresholds(pb, _PB_THRESHOLDS)
     return score, f"P/B {pb:.1f}x"
+
+
+def _peg_score(peg: Optional[float]) -> tuple[float, str]:
+    """Score PEG ratio. Returns (score 0-100, factor string)."""
+    if peg is None:
+        return 50.0, "PEG not available"
+    if peg < 0:
+        return 30.0, f"PEG {peg:.2f} — negative (unprofitable or declining earnings)"
+    score = _score_from_thresholds(peg, _PEG_THRESHOLDS)
+    label = "attractive" if score >= 70 else "fair" if score >= 50 else "expensive"
+    return score, f"PEG {peg:.2f}x — {label} relative to growth"
+
+
+def _earnings_leverage_check(
+    metrics: "Optional[NormalizedMetrics]",
+    stock_data: StockData,
+) -> tuple:
+    """
+    Check whether EPS growth is earnings-leverage-driven rather than organic.
+
+    Condition: EPS CAGR > 30% AND 3Y revenue CAGR < 20%.
+
+    Returns (is_leverage_driven: bool, eps_cagr_pct: float|None,
+             rev_cagr_pct: float|None, detail: str).
+
+    Uses 3Y CAGRs for both (apples-to-apples multi-year comparison).
+    Returns (False, None, None, "") when data is insufficient to classify.
+    """
+    # EPS CAGR — requires NormalizedMetrics 3Y CAGR
+    eps_cagr_pct: Optional[float] = None
+    if metrics is not None:
+        eps_cagr_pct = metrics.eps_growth_pct   # annualized %, e.g. 35.0
+
+    # 3Y Revenue CAGR from income statements
+    rev_cagr_pct: Optional[float] = None
+    inc = stock_data.income_statements
+    if len(inc) >= 4 and inc[0].revenue and inc[3].revenue and inc[3].revenue > 0:
+        rev_cagr_pct = ((inc[0].revenue / inc[3].revenue) ** (1 / 3) - 1) * 100
+
+    if eps_cagr_pct is None or rev_cagr_pct is None:
+        return False, eps_cagr_pct, rev_cagr_pct, ""
+
+    is_leverage = eps_cagr_pct > 30.0 and rev_cagr_pct < 20.0
+    if is_leverage:
+        gap    = eps_cagr_pct - rev_cagr_pct
+        detail = (
+            f"[LOW_GROWTH_QUALITY] EPS CAGR ({eps_cagr_pct:.1f}%) far exceeds "
+            f"revenue CAGR ({rev_cagr_pct:.1f}%) by {gap:.1f}pp — "
+            f"PEG driven by margin expansion, not pure growth. "
+            f"PEG weight reduced to {_PEG_WEIGHT_FLAGGED*100:.0f}% of valuation score."
+        )
+    else:
+        detail = ""
+    return is_leverage, eps_cagr_pct, rev_cagr_pct, detail
 
 
 def score_valuation(
@@ -159,24 +221,70 @@ def score_valuation(
         pb = metrics.pb_ratio
 
     pe_s, pe_f = _pe_score(pe)
-    sub_scores.append((pe_s, 0.30))
-    factors.append(pe_f)
-
     ev_s, ev_f = _ev_ebitda_score(ev_ebitda)
-    sub_scores.append((ev_s, 0.25))
-    factors.append(ev_f)
-
     ps_s, ps_f = _ps_score(ps)
-    sub_scores.append((ps_s, 0.20))
-    factors.append(ps_f)
-
     fcf_s, fcf_f = _fcf_yield_score(fcf_yield)
-    sub_scores.append((fcf_s, 0.20))
-    factors.append(fcf_f)
-
     pb_s, pb_f = _pb_score(pb)
-    sub_scores.append((pb_s, 0.05))
+
+    # ── PEG: earnings leverage check + dynamic weight ─────────────────────────
+    # PEG is scored as a proper sub-component (not a post-hoc composite nudge).
+    # Weight: up to 15% normally; capped at 5% when growth is leverage-driven.
+    # When PEG is included, the five base weights scale down proportionally so
+    # total weight always sums to 1.0.
+    peg = metrics.peg if metrics is not None else None
+
+    _leverage_driven, _eps_cagr, _rev_cagr, _leverage_detail = _earnings_leverage_check(
+        metrics, stock_data
+    )
+    peg_s, peg_f = _peg_score(peg)
+
+    if peg is not None and peg >= 0:
+        peg_w  = _PEG_WEIGHT_FLAGGED if _leverage_driven else _PEG_WEIGHT_NORMAL
+        base_w = 1.0 - peg_w          # remaining weight distributed to base five
+        # Base five raw weights (PE=30, EV=25, PS=20, FCF=20, PB=5 → sum=100)
+        _base_raw = [0.30, 0.25, 0.20, 0.20, 0.05]
+        _scaled   = [w * base_w for w in _base_raw]
+        sub_scores = [
+            (pe_s,  _scaled[0]),
+            (ev_s,  _scaled[1]),
+            (ps_s,  _scaled[2]),
+            (fcf_s, _scaled[3]),
+            (pb_s,  _scaled[4]),
+            (peg_s, peg_w),
+        ]
+        print(
+            f"  [FUND VAL] PEG included: peg={peg:.2f} score={peg_s:.0f}"
+            f" weight={peg_w:.0%} leverage_driven={_leverage_driven}"
+        )
+    else:
+        sub_scores = [
+            (pe_s,  0.30),
+            (ev_s,  0.25),
+            (ps_s,  0.20),
+            (fcf_s, 0.20),
+            (pb_s,  0.05),
+        ]
+        peg_w = 0.0
+
+    factors.append(pe_f)
+    factors.append(ev_f)
+    factors.append(ps_f)
+    factors.append(fcf_f)
     factors.append(pb_f)
+    if peg_w > 0:
+        factors.append(peg_f)
+
+    # Growth quality output line (always emitted when classification is available)
+    if _eps_cagr is not None and _rev_cagr is not None:
+        _gq_label = "earnings-leverage-driven" if _leverage_driven else (
+            "revenue-driven" if _rev_cagr >= 20.0 else "mixed"
+        )
+        factors.append(
+            f"Growth quality: {_gq_label} — "
+            f"EPS CAGR {_eps_cagr:.1f}% vs revenue CAGR {_rev_cagr:.1f}%"
+        )
+    if _leverage_detail:
+        factors.append(_leverage_detail)
 
     total_w   = sum(w for _, w in sub_scores)
     composite = sum(s * w for s, w in sub_scores) / total_w
@@ -184,35 +292,35 @@ def score_valuation(
     available = [s for s, _ in sub_scores if s != 50.0]
     data_quality = "good" if len(available) >= 3 else "partial" if available else "missing"
 
-    # ── PEG vs P/E tension detection ─────────────────────────────────────────
-    # When P/E headline looks expensive but PEG is attractive (or vice versa),
-    # the blended score is insufficient on its own — name the tension explicitly.
-    peg = metrics.peg if metrics is not None else None
+    # ── PEG vs P/E tension narrative (informational only — no composite tweak) ─
+    # The composite already incorporates PEG through the weighted blend above.
+    # This block adds a human-readable note when the two metrics point in
+    # opposite directions — useful for the analyst but doesn't double-count.
     peg_tension = ""
-    if peg is not None and pe is not None and pe > 0:
+    if peg is not None and peg >= 0 and pe is not None and pe > 0:
         if pe_s < 48 and peg < 1.5:
-            # Headline P/E looks expensive; PEG says it's reasonable relative to growth
             peg_tension = (
-                f"Headline P/E ({pe:.1f}x) looks elevated, but PEG of {peg:.2f}x"
-                " suggests the valuation is reasonable given the growth rate —"
-                " growth partially offsets the multiple."
+                f"Headline P/E ({pe:.1f}x) looks elevated, but PEG {peg:.2f}x"
+                f" suggests valuation is reasonable given the growth rate"
+                + (" — note: PEG weight reduced (earnings leverage detected)" if _leverage_driven else ".")
             )
-            # Partial score adjustment: lift composite toward midpoint when PEG is attractive
-            composite = min(composite + (50.0 - composite) * 0.20, composite + 6.0)
         elif pe_s > 65 and peg > 2.5:
-            # Headline P/E looks cheap; PEG says growth doesn't justify the multiple
             peg_tension = (
-                f"P/E ({pe:.1f}x) appears inexpensive in isolation, but PEG of {peg:.2f}x"
+                f"P/E ({pe:.1f}x) appears inexpensive in isolation, but PEG {peg:.2f}x"
                 " indicates the stock is expensive relative to its growth rate"
                 " — headline cheapness may be misleading."
             )
-            composite = max(composite - (composite - 50.0) * 0.20, composite - 6.0)
     if peg_tension:
         factors.append(peg_tension)
-        print(f"  [FUND VAL] PEG tension detected: {peg_tension[:80]}...")
+        print(f"  [FUND VAL] PEG tension noted: {peg_tension[:80]}...")
 
     # ── Reasoning narrative (metric-referencing) ─────────────────────────────
-    if peg_tension:
+    if _leverage_driven and peg_tension:
+        reasoning = (
+            f"Valuation reflects earnings leverage: {peg_tension.split(' —')[0]}. "
+            f"PEG weight reduced — growth is margin-driven, not organic."
+        )
+    elif peg_tension:
         reasoning = peg_tension
     elif composite >= 75:
         parts: list[str] = []

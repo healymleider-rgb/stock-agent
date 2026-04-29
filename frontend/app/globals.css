@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Score ring utility */
+.score-ring {
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Smooth tab transitions */
+[data-state="active"] {
+  animation: fade-in 0.25s ease-out;
+}
+
+/* Only visible in print */
+.only-print {
+  display: none;
+}
+@media print {
+  .only-print {
+    display: block !important;
+  }
+}
+
+/* ── Print / PDF styles ──────────────────────────────────────────────────── */
+@media print {
+  /* Hide interactive elements */
+  .no-print,
+  nav,
+  button,
+  [role="button"],
+  .print-hide {
+    display: none !important;
+  }
+
+  /* Remove sticky positioning */
+  .sticky {
+    position: static !important;
+  }
+
+  /* Full width layout */
+  body {
+    font-size: 11pt;
+    color: #000;
+    background: #fff;
+  }
+
+  .max-w-7xl {
+    max-width: 100% !important;
+  }
+
+  /* Ensure all tab content is visible */
+  [role="tabpanel"] {
+    display: block !important;
+    opacity: 1 !important;
+  }
+
+  [role="tablist"] {
+    display: none !important;
+  }
+
+  /* Cards get subtle borders for print */
+  .rounded-xl,
+  .rounded-lg {
+    border: 1px solid #d1d5db !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+
+  /* Typography */
+  h1 { font-size: 20pt; }
+  h2 { font-size: 16pt; }
+  h3 { font-size: 13pt; }
+  p, li { font-size: 10pt; line-height: 1.5; }
+
+  /* Page breaks */
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Each page in the 8-page institutional report */
+  .print-page-break {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  /* Show score ring */
+  .score-ring {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Show colored progress bars */
+  [class*="bg-green"],
+  [class*="bg-amber"],
+  [class*="bg-red"],
+  [class*="bg-blue"],
+  [class*="bg-slate"] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Allow wide tables (e.g. 5-year historical peer table) to expand fully —
+     overflow-x-auto clips content in PDF because there is no scrolling in print */
+  .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  /* Inline-styled visualization bars (momentum, valuation range, entry levels,
+     position sizing) — force exact color reproduction in headless PDF export */
+  [style*="background-color"] {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Inline-colored text (entry case badges, momentum descriptor pills) */
+  [style*="color"] {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Footer */
+  @page {
+    margin: 0.75in;
+  }
+}

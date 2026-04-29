@@ -50,6 +50,7 @@ class IncomeStatement:
     rd_expenses: Optional[float] = None
     selling_expenses: Optional[float] = None
     interest_expense: Optional[float] = None
+    filing_date: Optional[str] = None         # when company filed with SEC, e.g. "2026-02-03"
 
 
 # ── Balance Sheet ──────────────────────────────────────────────────────────────
@@ -167,13 +168,23 @@ class StockData:
     price_history: Optional[PriceHistory] = None
     current_price: Optional[float] = None
     market_cap: Optional[float] = None
-    shares_outstanding: Optional[float] = None   # from /quote sharesOutstanding
+    shares_outstanding: Optional[float] = None   # from /quote or /shares-float
     market_cap_computed: Optional[float] = None  # price × shares_outstanding
+    # Shares provenance — populated when /shares-float (SEC EDGAR) path is used
+    shares_source: str = ""                            # e.g. "FMP/shares-float (SEC EDGAR)"
+    shares_filing_period_end: Optional[str] = None    # fiscal period the shares cover, e.g. "2025-12-31"
+    shares_filing_date: Optional[str] = None          # when company filed 10-K with SEC, e.g. "2026-02-03"
+    shares_filing_url: Optional[str] = None           # direct SEC EDGAR document URL
+    shares_data_refreshed_at: Optional[str] = None    # when FMP last refreshed the float record
     earnings: list[dict[str, Any]] = field(default_factory=list)
     earnings_surprises: list[dict[str, Any]] = field(default_factory=list)
     analyst_recommendations: list[dict[str, Any]] = field(default_factory=list)
     price_targets: dict[str, Any] = field(default_factory=dict)
     sector_performance: list[dict[str, Any]] = field(default_factory=list)
+
+    # Quote timestamp — ISO date when the /quote price was sampled (YYYY-MM-DD).
+    # Populated from FMP `timestamp` field (Unix epoch) in fetch_all_financials().
+    quote_date: Optional[str] = None
 
     # Provider attribution — populated by OrchestratorAgent during ingestion.
     # Keys are data-type names ("profile", "financials", …) for dataset-level

@@ -76,8 +76,10 @@ class NormalizedMetrics:
     price_adjusted: bool = False   # True when price_history override was applied
 
     # ── Shares (for per-share valuation methods only) ─────────────────────────
-    shares:        Optional[float] = None
-    shares_source: str = ""       # "quote" | "income_diluted" | "income_basic" | "unavailable"
+    shares:             Optional[float] = None
+    shares_source:      str = ""       # "quote" | "FMP/shares-float (SEC EDGAR)" | "income_diluted" | ...
+    shares_filing_date: Optional[str] = None   # SEC filing date when shares_source is /shares-float
+    shares_filing_url:  Optional[str] = None   # Direct SEC EDGAR document URL
 
     # ── Market cap ────────────────────────────────────────────────────────────
     market_cap:          Optional[float] = None
@@ -115,6 +117,10 @@ class NormalizedMetrics:
     ebitda:     Optional[float] = None
     net_income: Optional[float] = None
 
+    # ── FCF ───────────────────────────────────────────────────────────────────
+    ttm_fcf:        Optional[float] = None
+    ttm_fcf_source: str = ""        # "cash_flow_statement" | "unavailable"
+
     # ── EPS growth & PEG (one definition everywhere) ─────────────────────────
     eps_growth_pct: Optional[float] = None   # annualized %, e.g. 12.5 means 12.5%
     peg:            Optional[float] = None
@@ -132,6 +138,69 @@ class NormalizedMetrics:
 
     # ── Audit trail ───────────────────────────────────────────────────────────
     log: list[str] = field(default_factory=list)
+
+    def apply_integrity_corrections(self, validation: object) -> None:
+        """
+        Apply adjusted_metrics from a ValidationResult back into this object.
+
+        Called by FundamentalAnalysisAgent after run_data_integrity_check()
+        so that all downstream scorers (valuation, growth, etc.) automatically
+        use the corrected values without any code change in those scorers.
+
+        Corrects:
+          price      → recompute pe_ratio and ps_ratio using corrected price
+          pe_ratio   → override with integrity-checked computed value
+          ev_ebitda  → override with integrity-checked computed value
+        """
+        adj = getattr(validation, "adjusted_metrics", {}) or {}
+        if not adj:
+            return
+
+        def _log(msg: str) -> None:
+            self.log.append(f"[CORRECTION] {msg}")
+            print(f"  [METRICS:CORRECTION] {msg}")
+
+        # Price override (from market cap identity constraint)
+        if "price" in adj:
+            old_price   = self.price
+            self.price  = adj["price"]
+            self.price_source = "integrity_corrected"
+            self.price_adjusted = True
+            _log(f"price {old_price} → {self.price:.4f} (market cap identity)")
+
+            # Recompute ratio numerators that use price
+            if self.ttm_eps and self.ttm_eps != 0:
+                old_pe         = self.pe_ratio
+                new_pe         = self.price / self.ttm_eps
+                import math as _math
+                if 0 < new_pe < 500:
+                    self.pe_computed_ttm = new_pe
+                    self.pe_ratio        = new_pe
+                    self.pe_source       = "computed_ttm_corrected"
+                    _log(f"pe_ratio {old_pe} → {new_pe:.2f} (price corrected)")
+
+            if self.market_cap and self.market_cap > 0 and self.revenue and self.revenue > 0:
+                old_ps         = self.ps_ratio
+                new_ps         = self.market_cap / self.revenue
+                if 0 < new_ps < 100:
+                    self.ps_computed = new_ps
+                    self.ps_ratio    = new_ps
+                    self.ps_source   = "computed_corrected"
+                    _log(f"ps_ratio {old_ps} → {new_ps:.2f} (price corrected)")
+
+        # PE override (from integrity check cross-validation)
+        if "pe_ratio" in adj and "price" not in adj:   # price takes precedence
+            old_pe          = self.pe_ratio
+            self.pe_ratio   = adj["pe_ratio"]
+            self.pe_source  = "computed_ttm"
+            _log(f"pe_ratio {old_pe} → {self.pe_ratio:.2f} (integrity computed)")
+
+        # EV/EBITDA override
+        if "ev_ebitda" in adj:
+            old_ev              = self.ev_ebitda
+            self.ev_ebitda      = adj["ev_ebitda"]
+            self.ev_ebitda_source = "computed"
+            _log(f"ev_ebitda {old_ev} → {self.ev_ebitda:.2f} (integrity computed)")
 
 
 def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
@@ -223,8 +292,13 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
     # scenario computations, NOT for market cap.
     if stock_data.shares_outstanding and stock_data.shares_outstanding > 0:
         m.shares = stock_data.shares_outstanding
-        m.shares_source = "quote"
-        _log(f"SHARES: /quote sharesOutstanding={m.shares:,.0f}")
+        # Use the source label that came from the provider (may be /shares-float or /quote).
+        # Fall back to "quote" for backwards compatibility with data fetched before the
+        # provenance fields were added.
+        m.shares_source      = stock_data.shares_source or "quote"
+        m.shares_filing_date = stock_data.shares_filing_date
+        m.shares_filing_url  = stock_data.shares_filing_url
+        _log(f"SHARES: {m.shares_source}={m.shares:,.0f}")
     elif income and income.net_income and income.eps_diluted:
         # Fallback: derive from income statement
         ni, epsd = income.net_income, income.eps_diluted
@@ -253,18 +327,22 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
         _log("SHARES: unavailable from all sources")
 
     # ── 3. MARKET CAP ─────────────────────────────────────────────────────────
-    # FMP /quote marketCap is authoritative — computed live by the exchange feed.
-    # Exception: if price was adjusted from price_history, recompute to stay
-    # internally consistent (market_cap = adjusted_price × shares_outstanding).
+    # Always compute market_cap = price × shares_outstanding.
+    # The FMP /quote marketCap field is stored for reference and divergence
+    # logging only — it can lag the current price by minutes, use a different
+    # share count than the latest 10-Q, or reflect a pre-market snapshot.
+    # Computing from price × shares guarantees internal consistency: every
+    # ratio derived from market_cap (P/S, EV) uses the same price the rest
+    # of the report uses.
     m.market_cap_api = stock_data.market_cap
     _log(f"MARKET_CAP: api={m.market_cap_api}")
 
-    if m.price_adjusted and m.price and m.shares and m.shares > 0:
+    if m.price and m.shares and m.shares > 0:
         m.market_cap_recomp = round(m.price * m.shares, 0)
         m.market_cap = m.market_cap_recomp
         m.market_cap_source = "recomputed"
         _log(
-            f"MARKET_CAP: price was adjusted → recomputed={m.market_cap_recomp:,.0f}"
+            f"MARKET_CAP: recomputed={m.market_cap_recomp:,.0f}"
             f" (price={m.price} × shares={m.shares:,.0f})"
         )
         if m.market_cap_api:
@@ -278,12 +356,7 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
     elif m.market_cap_api:
         m.market_cap = m.market_cap_api
         m.market_cap_source = "api"
-        _log(f"MARKET_CAP: using api={m.market_cap_api:,.0f} (price not adjusted)")
-    elif m.price and m.shares and m.shares > 0:
-        m.market_cap_recomp = round(m.price * m.shares, 0)
-        m.market_cap = m.market_cap_recomp
-        m.market_cap_source = "recomputed"
-        _log(f"MARKET_CAP: api unavailable → recomputed={m.market_cap_recomp:,.0f}")
+        _log(f"MARKET_CAP: shares unavailable → using api={m.market_cap_api:,.0f}")
     else:
         m.market_cap_source = "unavailable"
         _log("MARKET_CAP: unavailable")
@@ -333,6 +406,19 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
             )
     else:
         _log(f"TTM_EPS: {len(quarters)} quarters < 4 — TTM EPS unavailable")
+
+    # ── 5.5. TTM FCF — single authoritative source for FCF driver chain ─────────
+    # Reads the most recent annual cash flow statement (FMP `freeCashFlow` field).
+    # Stored here so all downstream users (valuation_range, exit multiple) read
+    # from this attribute rather than re-reading stock_data.cash_flows directly.
+    _cfs = stock_data.cash_flows
+    if _cfs and _cfs[0].free_cash_flow is not None:
+        m.ttm_fcf = _cfs[0].free_cash_flow
+        m.ttm_fcf_source = "cash_flow_statement"
+        _log(f"TTM_FCF: {m.ttm_fcf:,.0f} (source: cash_flow_statement)")
+    else:
+        m.ttm_fcf_source = "unavailable"
+        _log("TTM_FCF: unavailable — cash_flows missing or freeCashFlow is None")
 
     # ── 6. ANNUAL EPS ─────────────────────────────────────────────────────────
     if income:
@@ -401,27 +487,26 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
     if m.pe_provider_ttm:
         _log(f"PE: provider_ttm={m.pe_provider_ttm:.2f}")
 
-    # Selection: provider_ttm first (authoritative FMP TTM), then computed_ttm,
-    # then annual.  Divergence triggers a warning + confidence note but NEVER
-    # nulls a valid value.  Negative computed TTM EPS means computed_ttm is
-    # excluded from the valid set, but provider/annual paths remain open.
-    if m.pe_provider_ttm and 0 < m.pe_provider_ttm <= _PE_CAP:
-        m.pe_ratio  = m.pe_provider_ttm
-        m.pe_source = "provider_ttm"
-        _log(f"PE: using provider_ttm={m.pe_provider_ttm:.2f}")
-        if m.pe_computed_ttm is not None:
-            div = abs(m.pe_provider_ttm - m.pe_computed_ttm) / m.pe_computed_ttm
-            if div > _PE_DIV_LOG:
-                _log(
-                    f"PE: provider_ttm={m.pe_provider_ttm:.2f}"
-                    f" vs computed_ttm={m.pe_computed_ttm:.2f}"
-                    f" Δ={div:.1%} — WARN: sources diverge"
-                    f" (keeping provider, confidence reduced)"
-                )
-    elif m.pe_computed_ttm is not None:
+    # Selection: computed_ttm first (price / sum of last 4 quarterly EPS — primary source),
+    # then provider_ttm (FMP field — useful cross-check but can lag or use a different EPS base),
+    # then annual.  The computed path is authoritative: it uses the actual quarterly filings
+    # we have in hand, so it cannot drift from reality the way a cached API field can.
+    if m.pe_computed_ttm is not None:
         m.pe_ratio  = m.pe_computed_ttm
         m.pe_source = "computed_ttm"
-        _log(f"PE: no valid provider_ttm → using computed_ttm={m.pe_computed_ttm:.2f}")
+        _log(f"PE: using computed_ttm={m.pe_computed_ttm:.2f} (price / 4Q eps sum)")
+        if m.pe_provider_ttm and 0 < m.pe_provider_ttm <= _PE_CAP:
+            div = abs(m.pe_computed_ttm - m.pe_provider_ttm) / max(m.pe_provider_ttm, 0.01)
+            if div > _PE_DIV_LOG:
+                _log(
+                    f"PE: computed_ttm={m.pe_computed_ttm:.2f}"
+                    f" vs provider_ttm={m.pe_provider_ttm:.2f}"
+                    f" Δ={div:.1%} — provider diverges (stale EPS base?); using computed"
+                )
+    elif m.pe_provider_ttm and 0 < m.pe_provider_ttm <= _PE_CAP:
+        m.pe_ratio  = m.pe_provider_ttm
+        m.pe_source = "provider_ttm"
+        _log(f"PE: no computed_ttm → using provider_ttm={m.pe_provider_ttm:.2f}")
     elif m.pe_computed_ann is not None:
         m.pe_ratio  = m.pe_computed_ann
         m.pe_source = "computed_annual"
@@ -607,22 +692,32 @@ _CONFIDENCE_WEIGHTS: dict[str, float] = {
 
 def compute_signal_confidence(
     categories: dict,
+    macro: dict | None = None,
 ) -> tuple[float, str]:
     """
-    Derive confidence from SIGNAL AGREEMENT across category scores.
+    Confidence Model V2 — structured, explainable signal confidence.
 
-    High confidence (>0.85) requires directional alignment — most major
-    factors pointing the same way.  Confidence is penalised when:
-      - fundamental categories (valuation, growth, profitability, health)
-        disagree directionally with momentum
-      - score dispersion across categories is wide (>30 pts spread)
+    Combines three independent components:
+      1. Agreement score   — fraction of valid categories pointing the same direction.
+      2. Conflict penalty  — named penalties for specific signal conflicts:
+                             * strong fundamentals vs weak momentum
+                             * strong fundamentals vs expensive valuation
+                             * strong fundamentals vs adverse macro regime
+                             * wide score dispersion (> 45 pts)
+      3. Completeness adj  — small bonus/penalty for data coverage vs baseline.
 
-    ``categories`` should be a dict of name → CategoryScore-like object
-    with ``.score`` and ``.data_quality`` attributes.
+    Final confidence = base(agreement) − conflict_total + completeness_adj,
+    clamped to [0.25, 0.92].
+
+    ``categories``  dict of name → CategoryScore-like object with .score and
+                    .data_quality attributes (missing entries are excluded).
+    ``macro``       optional macro_findings dict from MacroLEIAgent; used only
+                    to detect regime / recession-risk conflict.  Safe to omit.
 
     Returns (confidence_0_to_1, explanation_string).
     """
-    # Filter to non-missing categories
+    # ── Step 0: filter to non-missing categories ──────────────────────────────
+    EXPECTED_N = 6  # valuation, growth, profitability, financial_health, momentum, risk
     valid: dict[str, float] = {}
     for name, cat in categories.items():
         if cat is None:
@@ -637,94 +732,167 @@ def compute_signal_confidence(
     def _dir(s: float) -> str:
         return "bull" if s >= 55 else "bear" if s < 45 else "neutral"
 
-    directions = {name: _dir(s) for name, s in valid.items()}
-    bull_count = sum(1 for d in directions.values() if d == "bull")
-    bear_count = sum(1 for d in directions.values() if d == "bear")
-    n = len(valid)
+    def _join(names: list[str]) -> str:
+        if not names:
+            return ""
+        if len(names) == 1:
+            return names[0]
+        return ", ".join(names[:-1]) + f" and {names[-1]}"
 
-    # Agreement ratio: fraction of categories pointing the dominant direction
+    # ── Step 1: Agreement score ───────────────────────────────────────────────
+    directions   = {name: _dir(s) for name, s in valid.items()}
+    bull_count   = sum(1 for d in directions.values() if d == "bull")
+    bear_count   = sum(1 for d in directions.values() if d == "bear")
+    n            = len(valid)
     max_consensus = max(bull_count, bear_count)
-    agreement_ratio = max_consensus / n if n > 0 else 0.5
+    agreement    = max_consensus / n if n > 0 else 0.5
 
-    # Dispersion penalty — large spread means less conviction even if majority agrees
-    all_scores = list(valid.values())
-    dispersion = max(all_scores) - min(all_scores)
-    # Penalty scales from 0 at 30 pts spread to 0.20 at 80 pts spread
-    dispersion_penalty = max(0.0, min(0.20, (dispersion - 30.0) / 250.0))
+    all_scores   = list(valid.values())
+    dispersion   = max(all_scores) - min(all_scores)
 
-    # Fundamental vs momentum conflict penalty
-    fundamental_names = {"valuation", "growth", "profitability", "financial_health"}
-    fund_scores = [s for name, s in valid.items() if name in fundamental_names]
-    mom_score = valid.get("momentum")
+    # ── Step 2: Conflict penalty — named, typed penalties ─────────────────────
+    FUND_NAMES   = {"growth", "profitability", "financial_health"}
+    fund_scores  = [s for nm, s in valid.items() if nm in FUND_NAMES]
+    val_score    = valid.get("valuation")
+    mom_score    = valid.get("momentum")
 
-    conflict_penalty = 0.0
-    conflict_note = ""
-    if fund_scores and mom_score is not None:
-        fund_avg = sum(fund_scores) / len(fund_scores)
+    fund_avg     = sum(fund_scores) / len(fund_scores) if fund_scores else None
+    fund_strong  = fund_avg is not None and fund_avg >= 62  # clear fundamental strength
+    fund_weak    = fund_avg is not None and fund_avg < 42   # clear fundamental weakness
+
+    # Assess macro regime and recession risk from macro dict (optional)
+    macro_regime  = (macro or {}).get("macro_regime", "")
+    macro_risk    = (macro or {}).get("recession_risk_level", "")
+    macro_adverse = macro_regime in ("Contraction", "Slowdown") or macro_risk in ("High", "Elevated")
+    macro_avail   = bool(macro_regime)
+
+    # Named conflicts: (description, penalty_amount)
+    conflicts: list[tuple[str, float]] = []
+
+    # A. Strong fundamentals vs weak momentum — price not confirming the thesis
+    if fund_strong and mom_score is not None and mom_score < 45:
+        conflicts.append((
+            f"momentum ({mom_score:.0f}/100) not confirming strong fundamentals ({fund_avg:.0f}/100 avg)",
+            0.10,
+        ))
+    # B. Weak fundamentals vs strong momentum — price run ahead of fundamentals
+    elif fund_weak and mom_score is not None and mom_score >= 65:
+        conflicts.append((
+            f"momentum ({mom_score:.0f}/100) running ahead of weak fundamentals ({fund_avg:.0f}/100 avg)",
+            0.08,
+        ))
+    # C. General directional mismatch (catches neutral-boundary cases not covered above)
+    elif fund_avg is not None and mom_score is not None:
         fund_dir = _dir(fund_avg)
-        mom_dir = _dir(mom_score)
-        if fund_dir != mom_dir and fund_dir != "neutral" and mom_dir != "neutral":
-            conflict_penalty = 0.10
-            conflict_note = (
-                f"momentum ({mom_score:.0f}/100) diverges from"
-                f" fundamentals ({fund_avg:.0f}/100 avg)"
-            )
+        mom_dir  = _dir(mom_score)
+        if fund_dir != "neutral" and mom_dir != "neutral" and fund_dir != mom_dir:
+            conflicts.append((
+                f"momentum ({mom_score:.0f}/100) diverges from fundamentals ({fund_avg:.0f}/100 avg)",
+                0.06,
+            ))
 
-    # Base confidence from agreement: range [0.40, 0.90]
-    base = 0.40 + agreement_ratio * 0.50
-    conf = max(0.0, min(1.0, base - dispersion_penalty - conflict_penalty))
+    # D. Strong fundamentals vs stretched valuation
+    if fund_strong and val_score is not None and val_score < 40:
+        conflicts.append((
+            f"valuation stretched (score {val_score:.0f}/100) against strong underlying fundamentals",
+            0.08,
+        ))
+
+    # E. Strong fundamentals vs adverse macro regime
+    if fund_strong and macro_avail and macro_adverse:
+        regime_str = macro_regime if macro_regime else f"recession risk {macro_risk.lower()}"
+        conflicts.append((
+            f"macro headwind ({regime_str.lower()}) limits conviction despite strong fundamentals",
+            0.07,
+        ))
+
+    # F. Wide dispersion — score spread reduces reliability regardless of direction
+    if dispersion > 45:
+        conflicts.append((
+            f"wide score spread ({dispersion:.0f} pts) across categories",
+            0.05,
+        ))
+
+    conflict_total = min(0.28, sum(p for _, p in conflicts))
+
+    # ── Step 3: Completeness adjustment ──────────────────────────────────────
+    # Neutral at ~4/6 categories; max ±0.04
+    completeness    = n / EXPECTED_N
+    completeness_adj = (completeness - (4 / EXPECTED_N)) * 0.10
+    completeness_adj = max(-0.04, min(0.04, completeness_adj))
+
+    # ── Step 4: Combine ───────────────────────────────────────────────────────
+    base = 0.40 + agreement * 0.50      # [0.40, 0.90]
+    conf = base - conflict_total + completeness_adj
+    conf = max(0.25, min(0.92, conf))
     conf = round(conf, 3)
 
-    # Build explanation — name specific strong/weak categories so the reader
-    # understands exactly what is driving and limiting conviction.
-    bull_names = [n.replace("_", " ") for n, d in directions.items() if d == "bull"]
-    bear_names = [n.replace("_", " ") for n, d in directions.items() if d == "bear"]
+    # ── Step 5: Build structured explanation ─────────────────────────────────
+    bull_names = [nm.replace("_", " ") for nm, d in directions.items() if d == "bull"]
+    bear_names = [nm.replace("_", " ") for nm, d in directions.items() if d == "bear"]
 
-    def _join(names: list[str]) -> str:
-        return ", ".join(names[:3]) if names else ""
+    if conflicts:
+        # Lead with what's agreeing, then name the conflicts
+        if bull_count >= bear_count and bull_names:
+            agree_part = f"Strong agreement across {_join(bull_names[:3])}"
+        elif bear_names:
+            agree_part = f"Broad bearish alignment across {_join(bear_names[:3])}"
+        else:
+            agree_part = "Signals partially aligned"
 
-    if conflict_note:
-        # Name which factors are strong and what's conflicting
-        fund_bull = [n for n in bull_names if n in {"valuation", "growth", "profitability", "financial health"}]
-        if fund_bull:
-            strong_str = _join(fund_bull)
+        if len(conflicts) == 1:
+            conflict_part = conflicts[0][0]
+            explanation = f"{agree_part}, but {conflict_part} — mixed signals reduce conviction."
+        else:
+            # Name the two most impactful conflicts
+            top2 = sorted(conflicts, key=lambda x: x[1], reverse=True)[:2]
+            c1, c2 = top2[0][0], top2[1][0]
             explanation = (
-                f"Strong {strong_str} fundamentals, but {conflict_note} —"
-                " mixed signals reduce conviction."
+                f"{agree_part}; key conflicts — {c1}; and {c2} — conviction limited."
             )
-        else:
-            explanation = f"Mixed signals reduce conviction — {conflict_note}."
-    elif agreement_ratio >= 0.80 and dispersion < 35:
-        if bull_count >= bear_count:
+    elif agreement >= 0.80 and dispersion < 35:
+        # High conviction, clean signal
+        if bull_count >= bear_count and bull_names:
             named = _join(bull_names[:3])
-            explanation = f"High signal agreement across {named} — conviction supported."
-        else:
+            explanation = f"High signal agreement across {named} — conviction well supported."
+        elif bear_names:
             named = _join(bear_names[:3])
-            explanation = f"High agreement on weakness across {named}."
-    elif dispersion > 40:
-        # Name the strong and weak poles explicitly
-        _top = sorted(valid.items(), key=lambda x: x[1], reverse=True)
-        _bot = sorted(valid.items(), key=lambda x: x[1])
-        strong_str = _join([n.replace("_", " ") for n, _ in _top[:2]])
-        weak_str   = _join([n.replace("_", " ") for n, _ in _bot[:2]])
-        explanation = (
-            f"Strong {strong_str} offset by weak {weak_str}"
-            f" — wide score spread ({dispersion:.0f} pts) limits conviction."
-        )
-    elif agreement_ratio >= 0.60:
-        if bull_count >= bear_count:
+            explanation = f"High agreement on weakness across {named} — bearish conviction well supported."
+        else:
+            explanation = "Strong signal alignment — conviction well supported."
+    elif agreement >= 0.60:
+        if bull_count >= bear_count and bull_names:
             named = _join(bull_names[:3])
             explanation = f"Most factors ({named}) lean bullish — moderate conviction."
-        else:
+        elif bear_names:
             named = _join(bear_names[:3])
             explanation = f"Most factors ({named}) lean bearish — moderate conviction."
+        else:
+            explanation = "Majority of factors in agreement — moderate conviction."
     else:
-        explanation = "Signals are mixed — no clear directional consensus across factors."
+        # Low agreement — name the poles
+        _top = sorted(valid.items(), key=lambda x: x[1], reverse=True)
+        _bot = sorted(valid.items(), key=lambda x: x[1])
+        strong_str = _join([nm.replace("_", " ") for nm, _ in _top[:2]])
+        weak_str   = _join([nm.replace("_", " ") for nm, _ in _bot[:2]])
+        explanation = (
+            f"Mixed signals — strong {strong_str} offset by weak {weak_str}"
+            f" ({dispersion:.0f} pts spread); no clear directional consensus."
+        )
+
+    # Append macro note when macro is available but not already in conflict list
+    macro_in_conflicts = any("macro" in desc for desc, _ in conflicts)
+    if macro_avail and not macro_in_conflicts:
+        if macro_adverse:
+            regime_str = macro_regime if macro_regime else f"recession risk {macro_risk.lower()}"
+            explanation += f" Macro ({regime_str.lower()}) adds a modest headwind."
+        elif macro_regime in ("Expansion", "Recovery") and macro_risk not in ("High", "Elevated"):
+            explanation += f" Macro backdrop ({macro_regime.lower()}) supports conviction."
 
     print(
-        f"  [SIGNAL_CONF] agreement={agreement_ratio:.2f}"
-        f" dispersion={dispersion:.1f} conflict_penalty={conflict_penalty:.2f}"
-        f" → conf={conf:.3f} | {explanation}"
+        f"  [SIGNAL_CONF v2] agreement={agreement:.2f}"
+        f" conflicts={len(conflicts)} total_penalty={conflict_total:.2f}"
+        f" completeness={completeness:.2f} → conf={conf:.3f}"
     )
     return conf, explanation
 

@@ -1,0 +1,94 @@
+{
+  "ticker": "PATH",
+  "model_date": "2026-04-21",
+  "excel_base_case": {
+    "current_price": 10.74,
+    "revenue_growth": 0.0993,
+    "gross_margin_current": 0.8282,
+    "net_margin_current": -0.0515,
+    "eps_current": -0.1316,
+    "eps_forward": {
+      "y1_2026": 0.67,
+      "y2_2027": 0.8,
+      "y3_2028": 0.89
+    },
+    "price_target_base": 13.4,
+    "price_target_low": 6.7,
+    "price_target_high": 20.1,
+    "implied_multiple": 20.0,
+    "pe_range_low": 10.0,
+    "pe_range_high": 30.0,
+    "wacc": 0.0801,
+    "beta": null
+  },
+  "model_diagnostics": {
+    "model_type": [
+      "stable_compounder",
+      "turnaround",
+      "margin_recovery"
+    ],
+    "primary_driver": "turnaround",
+    "assumption_quality": "low",
+    "flags": [
+      "EPS_CURRENT=-0.1316 < 0 \u2014 turnaround classification.",
+      "Gross margin (82.8%) vs net margin (-5.1%): 88% spread \u2265 20% threshold \u2014 margin_recovery classification.",
+      "EPS Y0 \u2192 Y1: $-0.13 \u2192 $0.67.",
+      "EPS Y1\u2192Y3 CAGR: 15.3% (0.67 \u2192 0.89)."
+    ],
+    "consistency_check": {
+      "eps_times_multiple": 13.4,
+      "price_target_base": 13.4,
+      "deviation_pct": 0.0,
+      "passed": true
+    }
+  },
+  "normalized_assumptions": {
+    "growth_mean": 0.0993,
+    "growth_range": 0.24,
+    "margin_mean": 0.8282,
+    "margin_range": 0.16,
+    "multiple_center": 20.0,
+    "multiple_range": 16.0
+  },
+  "scenario_mapping": {
+    "bear": {
+      "growth": -0.0207,
+      "margin": 0.7482,
+      "multiple": 12.0,
+      "implied_price_target": 8.04
+    },
+    "base": {
+      "growth": 0.0993,
+      "margin": 0.8282,
+      "multiple": 20.0,
+      "implied_price_target": 13.4
+    },
+    "bull": {
+      "growth": 0.2193,
+      "margin": 0.9082,
+      "multiple": 28.0,
+      "implied_price_target": 18.76
+    }
+  },
+  "monte_carlo_mapping": {
+    "growth": {
+      "distribution": "skewed-right",
+      "mean": 0.0993,
+      "sigma": 0.08,
+      "skew": 0.5
+    },
+    "margin": {
+      "distribution": "skewed-right",
+      "mean": 0.8282,
+      "sigma": 0.0533,
+      "skew": 0.5
+    },
+    "multiple": {
+      "distribution": "log-normal",
+      "mean": 20.0,
+      "sigma": 5.3333,
+      "skew": 1.0
+    },
+    "tail_profile": "wide"
+  }
+}

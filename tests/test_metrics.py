@@ -118,22 +118,26 @@ def _make_stock(
 
 def test_provider_market_cap_preserved():
     """
-    FMP /quote marketCap ($50B) must be used as-is when price was NOT
-    adjusted from price_history.  Our computed cap from shares should
-    only override when price was corrected.
+    Market cap is always computed from price × shares when both are available,
+    regardless of whether the price was adjusted.  The API value is stored for
+    reference and divergence logging only.
+
+    price=100 × shares=500M → recomputed=$50B (same as api in this case,
+    but source must be "recomputed").
     """
     sd = _make_stock(
         market_cap_api=50_000_000_000.0,
         price=100.0,
         shares_outstanding=500_000_000.0,
-        # No price_history → no price adjustment → API market cap wins
     )
     m = compute_core_metrics(sd)
 
     assert m.market_cap == 50_000_000_000.0, (
-        f"Expected API market cap 50B, got {m.market_cap}"
+        f"Expected recomputed market cap 50B (price×shares), got {m.market_cap}"
     )
-    assert m.market_cap_source == "api"
+    assert m.market_cap_source == "recomputed", (
+        f"Expected source='recomputed', got '{m.market_cap_source}'"
+    )
     assert m.price_adjusted is False
 
 
@@ -168,23 +172,30 @@ def test_market_cap_recomputed_when_price_adjusted():
 
 def test_scorer_uses_normalized_market_cap():
     """
-    score_valuation must score P/S using metrics.market_cap (authoritative)
-    rather than stock_data.market_cap which could hold a stale /quote value.
+    score_valuation must score P/S using metrics.market_cap (always computed
+    as price × shares) rather than the potentially stale API /quote value.
+
+    price=100 × shares=500M → market_cap=$50B (recomputed, ignores api $10B)
+    P/S = $50B / $10B revenue = 5.0 (not 1.0 from the stale api cap)
     """
     sd = _make_stock(
         price=100.0,
-        market_cap_api=10_000_000_000.0,   # $10B API (wrong)
+        market_cap_api=10_000_000_000.0,   # stale $10B API value — ignored
         revenue=10_000_000_000.0,           # $10B revenue
+        shares_outstanding=500_000_000.0,   # 500M shares → computed cap = $50B
         ps_ratio_provider=None,             # no provider P/S
     )
-    # NormalizedMetrics with corrected market cap: $50B
     m = compute_core_metrics(sd)
-    # API market cap = $10B (no price adjustment), so PS computed = 10B/10B = 1.0
+    # market_cap = price × shares = 100 × 500M = $50B (source: recomputed)
+    assert m.market_cap_source == "recomputed"
+    assert abs(m.market_cap - 50_000_000_000.0) < 1e6, (
+        f"Expected market_cap=$50B, got {m.market_cap}"
+    )
+    # P/S = $50B / $10B = 5.0
     assert m.ps_ratio is not None
-    assert abs(m.ps_ratio - 1.0) < 0.05, f"Expected P/S ≈ 1.0, got {m.ps_ratio}"
+    assert abs(m.ps_ratio - 5.0) < 0.05, f"Expected P/S ≈ 5.0, got {m.ps_ratio}"
 
     score = score_valuation(sd, metrics=m)
-    # P/S 1.0 should be scored as "cheap" (score >= 75)
     ps_factor = next((f for f in score.factors if "P/S" in f), None)
     assert ps_factor is not None, "P/S factor should be in scorecard"
     assert score.data_quality != "missing", "Score should have usable data"
@@ -303,9 +314,9 @@ def test_peg_absent_when_eps_growth_negative():
 
 def test_diverging_pe_keeps_provider_value():
     """
-    When computed_ttm PE and provider PE diverge by > threshold, the system
-    must keep the provider value (not null it) and log a warning.
-    Provider PE = 30, computed TTM PE = 50 (Δ = 67% > 25% threshold).
+    When computed_ttm PE and provider PE diverge by > threshold, computed_ttm
+    wins (it is the authoritative source) and a divergence warning is logged.
+    computed TTM PE = 50 (100/2.0), provider PE = 30 (Δ = 67% > 25% threshold).
     """
     quarterly_eps = [0.50, 0.50, 0.50, 0.50]  # TTM EPS = 2.0 → PE = 50
     sd = _make_stock(
@@ -315,12 +326,12 @@ def test_diverging_pe_keeps_provider_value():
     )
     m = compute_core_metrics(sd)
 
-    # provider_ttm should win in the selection order
-    assert m.pe_ratio == 30.0, (
-        f"Expected provider PE=30 (not nulled), got {m.pe_ratio}"
+    # computed_ttm wins — it reflects actual quarterly filings
+    assert m.pe_ratio == 50.0, (
+        f"Expected computed_ttm PE=50 (price / 4Q EPS sum), got {m.pe_ratio}"
     )
-    assert m.pe_source == "provider_ttm"
-    # Warning logged
+    assert m.pe_source == "computed_ttm"
+    # Divergence warning still logged
     warning_logged = any("WARN" in entry or "diverge" in entry for entry in m.log)
     assert warning_logged, "Divergence warning should appear in metric log"
 
@@ -351,7 +362,12 @@ def test_diverging_market_cap_keeps_api_value():
 # ── Test 6: PE resolution order ───────────────────────────────────────────────
 
 def test_pe_resolution_order_provider_first():
-    """provider_ttm beats computed_ttm when both are valid."""
+    """
+    computed_ttm (from actual quarterly EPS) beats provider_ttm when both
+    are valid.  computed_ttm = 100 / (1+1+1+1) = 25; provider says 30.
+    Provider value is stored for cross-validation and divergence logging,
+    but computed_ttm is the authoritative source.
+    """
     quarterly_eps = [1.0, 1.0, 1.0, 1.0]   # computed_ttm = price/4 = 25
     sd = _make_stock(
         price=100.0,
@@ -359,8 +375,10 @@ def test_pe_resolution_order_provider_first():
         pe_ratio_provider=30.0,
     )
     m = compute_core_metrics(sd)
-    assert m.pe_ratio == 30.0
-    assert m.pe_source == "provider_ttm"
+    assert m.pe_ratio == 25.0, (
+        f"Expected computed_ttm PE=25 (price/4Q EPS), got {m.pe_ratio}"
+    )
+    assert m.pe_source == "computed_ttm"
 
 
 def test_pe_resolution_order_computed_ttm_fallback():
@@ -421,6 +439,39 @@ def test_shares_fallback_to_income_when_quote_missing():
     assert abs(m.shares - 500_000_000) < 1000
 
 
+def test_shares_float_provenance_propagates_to_metrics():
+    """
+    When StockData carries /shares-float provenance, NormalizedMetrics
+    must reflect the SEC source label, filing_date, and filing_url.
+    """
+    sd = _make_stock(shares_outstanding=80_397_700.0)
+    # Simulate what FMPProvider sets when /shares-float is used
+    sd.shares_source      = "FMP/shares-float (SEC EDGAR)"
+    sd.shares_filing_date = "2026-04-20 16:19:55"
+    sd.shares_filing_url  = "https://www.sec.gov/Archives/edgar/data/1069183/000162828026011360/axon-20251231.htm"
+
+    m = compute_core_metrics(sd)
+
+    assert m.shares == 80_397_700.0
+    assert m.shares_source      == "FMP/shares-float (SEC EDGAR)"
+    assert m.shares_filing_date == "2026-04-20 16:19:55"
+    assert "sec.gov" in m.shares_filing_url
+
+
+def test_shares_source_defaults_to_quote_when_blank():
+    """
+    StockData with shares_outstanding set but no shares_source (legacy path
+    or plain /quote hit) must still produce shares_source == 'quote'.
+    """
+    sd = _make_stock(shares_outstanding=500_000_000.0)
+    # shares_source defaults to "" in StockData, simulating old data
+    assert sd.shares_source == ""
+    m = compute_core_metrics(sd)
+    assert m.shares_source == "quote"
+    assert m.shares_filing_date is None
+    assert m.shares_filing_url  is None
+
+
 # ── Test 8: Sanity caps work correctly ────────────────────────────────────────
 
 def test_pe_above_cap_excluded():
@@ -439,13 +490,17 @@ def test_pe_above_cap_excluded():
 
 def test_ev_ebitda_above_cap_excluded():
     """EV/EBITDA > 300 should be nulled."""
+    # With computed market cap: price=100 × shares=500M = $50B.
+    # EBITDA=$100M → EV ≈ ($50B + $1B - $2B) = $49B → EV/EBITDA ≈ 490 > 300 cap.
+    # Provider also says 350 > 300 cap.
     sd = _make_stock(
-        market_cap_api=1_000_000_000_000.0,   # $1T market cap
-        ebitda=1_000_000_000.0,                # $1B EBITDA → EV/EBITDA ≈ 1000
-        ev_to_ebitda_provider=350.0,           # > 300 cap
+        price=100.0,
+        shares_outstanding=500_000_000.0,
+        ebitda=100_000_000.0,       # $100M EBITDA → EV/EBITDA ≈ 490
+        ev_to_ebitda_provider=350.0,  # > 300 cap
     )
     m = compute_core_metrics(sd)
-    # ev_ebitda_computed ≈ 1000 (> 300) → excluded
+    # ev_ebitda_computed ≈ 490 (> 300) → excluded
     # ev_ebitda_provider = 350 (> 300) → excluded
     assert m.ev_ebitda is None, f"Expected None for insane EV/EBITDA, got {m.ev_ebitda}"
 
@@ -1157,8 +1212,8 @@ def test_scenario_driver_table_shows_bear_base_bull_eps():
 
 def test_scenario_primary_method_not_empty_when_pe_runs():
     """
-    When the P/E method computes a valid base price, scenario_primary_method
-    must be 'P/E' — not an empty string that would leave the driver table blank.
+    When valuation methods run, scenario_primary_method must be non-empty.
+    The driver model takes priority ('driver'); P/E is the fallback.
     """
     sd = _make_stock(
         quarterly_eps=[1.5, 1.4, 1.3, 1.2],
@@ -1172,11 +1227,14 @@ def test_scenario_primary_method_not_empty_when_pe_runs():
     from analysis.valuation_range import compute_valuation_range
     vr = compute_valuation_range(sd, metrics=m)
 
-    if "P/E" in (vr.methods_used or []):
-        assert vr.scenario_primary_method == "P/E", (
-            f"scenario_primary_method should be 'P/E' when P/E method produced results. "
-            f"Got: '{vr.scenario_primary_method}'"
-        )
+    assert vr.scenario_primary_method in ("driver", "P/E", "EV/EBITDA", "P/S"), (
+        f"scenario_primary_method must not be empty. Got: '{vr.scenario_primary_method}'"
+    )
+    if vr.driver_model_available:
+        assert vr.scenario_primary_method == "driver"
+        assert vr.scenario_base_label != "", "scenario_base_label must be set when driver runs"
+    elif "P/E" in (vr.methods_used or []):
+        assert vr.scenario_primary_method == "P/E"
         assert vr.scenario_bear_pe is not None, "scenario_bear_pe must be set"
         assert vr.scenario_base_eps is not None, "scenario_base_eps must be set"
 
@@ -1503,6 +1561,403 @@ def test_confidence_why_line_rendered_in_memo():
     )
     why_text = why_lines[0]
     assert len(why_text.strip()) > 10, f"Why line is too short to be meaningful: {why_text!r}"
+
+
+# ── Group 15: LEI Layer — macro_overlay.score() with trend fields ─────────────
+#
+# These tests exercise the Phase 1 LEI additions:
+#   - _classify_cycle_phase() via score()
+#   - cycle_phase / lei_trend / yield_spread_trend on MacroAssessment
+#   - Report rendering of cycle phase + trend line
+#   - None-safety when trend fields are absent
+#
+# All tests call analysis.macro_overlay.score() directly with a synthetic
+# snapshot dict — no FRED HTTP calls.  The pattern mirrors the FREDProvider
+# snapshot format (including the new trend keys).
+
+from analysis.macro_overlay import score as macro_score
+
+
+def _macro_snap(
+    yield_spread: float | None  = 0.80,
+    jobless_claims: float | None= 210_000.0,
+    housing_starts: float | None= 1_450.0,
+    mfg_employment: float | None= 13_100.0,
+    oecd_cli: float | None      = 100.6,
+    lei_composite: float | None = None,
+    oecd_cli_trend: str | None  = None,
+    yield_spread_trend: str | None = None,
+) -> dict:
+    """Synthetic LEI snapshot — mirrors FREDProvider.get_lei_snapshot() output."""
+    return {
+        "yield_spread_10y2y":  yield_spread,
+        "jobless_claims":      jobless_claims,
+        "housing_starts":      housing_starts,
+        "mfg_employment":      mfg_employment,
+        "oecd_cli":            oecd_cli,
+        "lei_composite":       lei_composite,
+        "oecd_cli_trend":      oecd_cli_trend,
+        "yield_spread_trend":  yield_spread_trend,
+    }
+
+
+def test_macro_expansion_when_all_indicators_healthy():
+    """Strong indicators across the board → Expansion, score > 65, Low recession risk."""
+    a = macro_score(_macro_snap(
+        yield_spread=0.90,
+        jobless_claims=205_000,
+        housing_starts=1_600,
+        mfg_employment=13_200,
+        oecd_cli=100.8,
+    ))
+    assert a.macro_regime == "Expansion", f"Expected Expansion, got {a.macro_regime}"
+    assert a.macro_score > 65, f"Expected score > 65, got {a.macro_score}"
+    assert a.recession_risk_level == "Low"
+
+
+def test_macro_contraction_when_deeply_inverted():
+    """Deeply inverted curve + high claims + weak housing → Contraction, High recession risk."""
+    a = macro_score(_macro_snap(
+        yield_spread=-0.90,
+        jobless_claims=380_000,
+        housing_starts=820,
+        mfg_employment=11_200,
+        oecd_cli=99.0,
+    ))
+    assert a.macro_regime == "Contraction", f"Expected Contraction, got {a.macro_regime}"
+    assert a.recession_risk_level == "High"
+    assert a.macro_score < 35
+
+
+def test_macro_recovery_not_contraction_when_spread_recovering():
+    """Borderline score + spread recovering from inversion + stable claims → Recovery."""
+    # yield_spread in [−0.50, 0.10] + claims ≤ 250k triggers Recovery override
+    a = macro_score(_macro_snap(
+        yield_spread=-0.20,
+        jobless_claims=240_000,
+        housing_starts=1_100,
+        mfg_employment=12_200,
+        oecd_cli=99.6,
+    ))
+    assert a.macro_regime == "Recovery", (
+        f"Expected Recovery, got {a.macro_regime} (score={a.macro_score:.1f})"
+    )
+
+
+def test_cycle_phase_mid_when_expansion_cli_rising():
+    """Expansion + rising CLI + healthy spread → cycle_phase == 'mid'."""
+    a = macro_score(_macro_snap(
+        yield_spread=0.80,
+        oecd_cli=100.7,
+        oecd_cli_trend="rising",
+        yield_spread_trend="rising",
+    ))
+    assert a.macro_regime == "Expansion"
+    assert a.cycle_phase == "mid", f"Expected mid, got {a.cycle_phase}"
+    assert a.lei_trend == "rising"
+    assert a.yield_spread_trend == "rising"
+
+
+def test_cycle_phase_late_when_expansion_cli_falling():
+    """Expansion regime + falling CLI → cycle_phase == 'late'."""
+    a = macro_score(_macro_snap(
+        yield_spread=0.80,       # spread healthy — not the trigger
+        oecd_cli=100.4,
+        oecd_cli_trend="falling",
+        yield_spread_trend=None,
+    ))
+    assert a.macro_regime == "Expansion"
+    assert a.cycle_phase == "late", f"Expected late, got {a.cycle_phase}"
+    assert a.lei_trend == "falling"
+
+
+def test_cycle_phase_late_when_expansion_spread_tight():
+    """Expansion + spread below 0.25pp (tight) → cycle_phase == 'late'."""
+    a = macro_score(_macro_snap(
+        yield_spread=0.15,       # tight but not inverted
+        oecd_cli=100.5,
+        oecd_cli_trend="rising", # CLI still rising — spread is the trigger
+    ))
+    assert a.macro_regime == "Expansion"
+    assert a.cycle_phase == "late", f"Expected late, got {a.cycle_phase}"
+
+
+def test_cycle_phase_early_when_slowdown_inflecting():
+    """Slowdown + CLI inflecting + spread turning up → cycle_phase == 'early' (turning point)."""
+    a = macro_score(_macro_snap(
+        yield_spread=-0.05,       # near zero — still slightly inverted
+        jobless_claims=245_000,
+        housing_starts=1_050,
+        mfg_employment=12_100,
+        oecd_cli=99.7,
+        oecd_cli_trend="inflecting",
+        yield_spread_trend="rising",
+    ))
+    # Regime may be Slowdown or Recovery depending on exact score; phase should be early
+    assert a.cycle_phase in ("early", "contraction"), (
+        f"Expected early (or contraction as fallback), got {a.cycle_phase} "
+        f"(regime={a.macro_regime}, score={a.macro_score:.1f})"
+    )
+
+
+def test_cycle_phase_contraction_when_regime_contraction():
+    """Contraction regime always maps to cycle_phase == 'contraction'."""
+    a = macro_score(_macro_snap(
+        yield_spread=-1.20,
+        jobless_claims=420_000,
+        housing_starts=700,
+        mfg_employment=11_000,
+        oecd_cli=98.5,
+    ))
+    assert a.macro_regime == "Contraction"
+    assert a.cycle_phase == "contraction"
+
+
+def test_cycle_phase_unknown_when_trend_fields_absent():
+    """When trend keys are missing (FRED not available), cycle_phase may be set
+    from regime alone — must not be None and must be a valid phase string."""
+    a = macro_score(_macro_snap(
+        yield_spread=0.80,
+        oecd_cli_trend=None,        # no trend data available
+        yield_spread_trend=None,
+    ))
+    valid_phases = {"early", "mid", "late", "contraction", "unknown"}
+    assert a.cycle_phase in valid_phases, (
+        f"cycle_phase must be a valid string, got {a.cycle_phase!r}"
+    )
+    # With healthy indicators and no trend data, should default to mid (not unknown)
+    if a.macro_regime == "Expansion":
+        assert a.cycle_phase == "mid", (
+            f"Expansion with no trend data should default to mid, got {a.cycle_phase}"
+        )
+
+
+def test_macro_confidence_modifier_negative_on_contraction():
+    """Low macro score (contraction) → negative confidence modifier."""
+    a = macro_score(_macro_snap(
+        yield_spread=-1.00,
+        jobless_claims=360_000,
+        housing_starts=750,
+        mfg_employment=11_100,
+        oecd_cli=98.6,
+    ))
+    assert a.confidence_modifier < 0, (
+        f"Contraction regime should produce negative confidence_modifier, "
+        f"got {a.confidence_modifier}"
+    )
+
+
+def test_macro_section_renders_lei_narrative():
+    """
+    _build_macro_section() renders an LEI narrative — not a raw 'Cycle Phase:' label.
+    The narrative must reference the cycle phase concept and LEI trend in prose.
+    """
+    from agents.reporting_agent import ReportingAgent
+
+    macro_findings = {
+        "macro_regime":           "Expansion",
+        "macro_score":            72.0,
+        "recession_risk_level":   "Low",
+        "sector_tilt":            "Cyclicals, Industrials",
+        "bullish_macro_factors":  ["Yield curve positive"],
+        "bearish_macro_factors":  [],
+        "cycle_phase":            "mid",
+        "lei_trend":              "rising",
+        "yield_spread_trend":     "rising",
+    }
+    ra = ReportingAgent()
+    lines = ra._build_macro_section(macro_findings)
+    text = "\n".join(lines)
+
+    # Must contain prose narrative with mid-cycle concept
+    assert any(phrase in text.lower() for phrase in ("mid-cycle", "mid cycle")), (
+        f"Narrative must reference mid-cycle:\n{text}"
+    )
+    # LEI trend should appear as prose in the narrative
+    assert "leading indicators" in text.lower(), (
+        f"Narrative should describe leading indicator trend:\n{text}"
+    )
+    # Must include the labeled header rows
+    assert "Macro Regime" in text, f"Macro Regime header row missing:\n{text}"
+    assert "Cycle Phase" in text, f"Cycle Phase header row missing:\n{text}"
+    assert "Mid" in text, f"Phase label 'Mid' missing from header:\n{text}"
+
+
+def test_macro_section_falls_back_to_verdict_when_phase_unknown():
+    """
+    When cycle_phase is 'unknown', _build_macro_section() uses the generic
+    one-line verdict (backward-compatible fallback) rather than an LEI narrative.
+    """
+    from agents.reporting_agent import ReportingAgent
+
+    macro_findings = {
+        "macro_regime":           "Expansion",
+        "macro_score":            68.0,
+        "recession_risk_level":   "Low",
+        "sector_tilt":            "Cyclicals",
+        "bullish_macro_factors":  [],
+        "bearish_macro_factors":  [],
+        "cycle_phase":            "unknown",
+        "lei_trend":              None,
+        "yield_spread_trend":     None,
+    }
+    ra = ReportingAgent()
+    lines = ra._build_macro_section(macro_findings)
+    text = "\n".join(lines)
+    # Should fall back to the generic verdict — no narrative-specific phrases
+    assert "tailwind" in text.lower() or "Macro" in text, (
+        f"Expected generic verdict when phase is unknown:\n{text}"
+    )
+    # Should NOT emit a Cycle Phase row when phase is unknown
+    assert "Cycle Phase" not in text, f"Cycle Phase row should not appear when phase is unknown:\n{text}"
+
+
+def test_macro_section_safe_when_new_fields_absent():
+    """_build_macro_section() must not crash when Phase 1 fields are missing
+    (e.g. payload from an older agent run before the upgrade)."""
+    from agents.reporting_agent import ReportingAgent
+
+    macro_findings = {
+        "macro_regime":           "Slowdown",
+        "macro_score":            52.0,
+        "recession_risk_level":   "Moderate",
+        "sector_tilt":            "Defensives",
+        "bullish_macro_factors":  [],
+        "bearish_macro_factors":  ["Yield curve flat"],
+        # Deliberately no cycle_phase / lei_trend / yield_spread_trend keys
+    }
+    ra = ReportingAgent()
+    lines = ra._build_macro_section(macro_findings)   # must not raise
+    text = "\n".join(lines)
+    assert "Slowdown" in text
+
+
+def test_macro_slowdown_regime_and_phase():
+    """Moderately weak indicators (score ~55) → Slowdown, Moderate risk, late phase.
+    Key: claims > 250k prevents the Recovery override; spread modestly positive.
+    """
+    a = macro_score(_macro_snap(
+        yield_spread=0.20,        # modestly positive → not inverted, score=65 for this indicator
+        jobless_claims=255_000,   # just above 250k → bars Recovery override; score=40
+        housing_starts=1_250,     # adequate → score=62
+        mfg_employment=12_600,    # adequate → score=62
+        oecd_cli=99.6,            # slightly below trend → score=40
+        oecd_cli_trend="falling",
+        yield_spread_trend=None,
+    ))
+    # weighted ≈ 65*0.30 + 40*0.25 + 62*0.20 + 62*0.15 + 40*0.10 ≈ 55
+    assert a.macro_regime == "Slowdown", (
+        f"Expected Slowdown, got {a.macro_regime} (score={a.macro_score:.1f})"
+    )
+    assert a.recession_risk_level in ("Moderate", "Elevated"), (
+        f"Expected Moderate or Elevated recession risk, got {a.recession_risk_level}"
+    )
+    assert a.cycle_phase == "late", (
+        f"Expected late cycle phase for Slowdown + falling CLI, got {a.cycle_phase}"
+    )
+
+
+def test_macro_missing_fred_fallback_does_not_crash_apply_macro_influence():
+    """_apply_macro_influence() with an empty or partial macro dict must not raise."""
+    from agents.reporting_agent import ReportingAgent
+    from models.scorecard import Scorecard, Stance
+
+    ra = ReportingAgent()
+
+    # Build a minimal scorecard
+    sc = Scorecard(ticker="TEST", overall_score=60, stance=Stance.NEUTRAL, confidence=0.65)
+
+    # Call with empty dict — simulates no-FRED path
+    ra._apply_macro_influence(sc, {})
+    assert sc.confidence == 0.65, "Empty macro dict must not mutate confidence"
+
+    # Call with 'Unknown' regime — simulates FRED key not set
+    ra._apply_macro_influence(sc, {"macro_regime": "Unknown", "recession_risk_level": "Unknown"})
+    assert sc.confidence == 0.65, "Unknown regime must not mutate confidence"
+
+
+def test_phase_sector_tilt_is_phase_specific():
+    """Phase-specific tilt should differ from the regime-level fallback for late Expansion."""
+    a_late = macro_score(_macro_snap(
+        yield_spread=0.15,        # tight → late-cycle
+        oecd_cli_trend="rising",  # CLI still ok
+    ))
+    assert a_late.macro_regime == "Expansion"
+    assert a_late.cycle_phase == "late"
+    # Late Expansion tilt should favour quality, not broad cyclicals
+    assert "quality" in a_late.sector_tilt.lower() or "dividend" in a_late.sector_tilt.lower(), (
+        f"Late Expansion tilt should be quality/dividend-focused, got: {a_late.sector_tilt!r}"
+    )
+
+    a_mid = macro_score(_macro_snap(
+        yield_spread=0.80,
+        oecd_cli=100.7,
+        oecd_cli_trend="rising",
+        yield_spread_trend="rising",
+    ))
+    assert a_mid.macro_regime == "Expansion"
+    assert a_mid.cycle_phase == "mid"
+    assert "cyclical" in a_mid.sector_tilt.lower(), (
+        f"Mid Expansion tilt should include cyclicals, got: {a_mid.sector_tilt!r}"
+    )
+
+
+def test_apply_macro_influence_early_mid_boosts_confidence():
+    """Early/mid cycle phase should add a small positive confidence nudge."""
+    from agents.reporting_agent import ReportingAgent
+    from models.scorecard import Scorecard, Stance
+
+    ra = ReportingAgent()
+    sc = Scorecard(ticker="TEST", overall_score=65, stance=Stance.BULLISH, confidence=0.70)
+
+    ra._apply_macro_influence(sc, {
+        "macro_regime":         "Expansion",
+        "recession_risk_level": "Low",
+        "cycle_phase":          "mid",
+    })
+    # Expansion+Low = +0.02, mid = +0.01 → total +0.03
+    assert sc.confidence > 0.70, (
+        f"Early/mid cycle should boost confidence, got {sc.confidence:.4f}"
+    )
+
+
+def test_apply_macro_influence_late_reduces_confidence():
+    """Late cycle phase should subtract a small confidence nudge."""
+    from agents.reporting_agent import ReportingAgent
+    from models.scorecard import Scorecard, Stance
+
+    ra = ReportingAgent()
+    sc = Scorecard(ticker="TEST", overall_score=65, stance=Stance.BULLISH, confidence=0.70)
+
+    ra._apply_macro_influence(sc, {
+        "macro_regime":         "Expansion",
+        "recession_risk_level": "Low",
+        "cycle_phase":          "late",
+    })
+    # Expansion+Low = +0.02, late = -0.01 → net +0.01 (still up but less than mid)
+    # Just verify it is lower than the mid-cycle version (0.73)
+    assert sc.confidence < 0.73, (
+        f"Late cycle should partially offset the expansion boost, got {sc.confidence:.4f}"
+    )
+
+
+def test_confidence_adjustment_rationale_populated():
+    """MacroAssessment should carry a non-empty confidence_adjustment_rationale."""
+    a = macro_score(_macro_snap(
+        yield_spread=0.80,
+        jobless_claims=210_000,
+        housing_starts=1_500,
+        mfg_employment=13_000,
+        oecd_cli=100.6,
+    ))
+    assert a.confidence_adjustment_rationale, (
+        "confidence_adjustment_rationale must be a non-empty string"
+    )
+    # Strong indicators → positive modifier → rationale should mention score or modifier direction
+    assert any(word in a.confidence_adjustment_rationale.lower()
+               for word in ("strong", "solid", "positive")), (
+        f"Rationale for healthy macro should be positive, got: {a.confidence_adjustment_rationale!r}"
+    )
 
 
 if __name__ == "__main__":

@@ -265,6 +265,10 @@ class OrchestratorAgent:
             incoming_mktcap         = payload.get("market_cap")
             incoming_shares         = payload.get("shares_outstanding")
             incoming_mktcap_cmp     = payload.get("market_cap_computed")
+            incoming_shares_source       = payload.get("shares_source", "")
+            incoming_filing_period_end   = payload.get("shares_filing_period_end")
+            incoming_filing_url          = payload.get("shares_filing_url")
+            incoming_data_refreshed_at   = payload.get("shares_data_refreshed_at")
             if incoming_profile is not None:
                 sd.profile = incoming_profile
             if incoming_price is not None:
@@ -275,6 +279,14 @@ class OrchestratorAgent:
                 sd.shares_outstanding = incoming_shares
             if incoming_mktcap_cmp is not None:
                 sd.market_cap_computed = incoming_mktcap_cmp
+            if incoming_shares_source:
+                sd.shares_source = incoming_shares_source
+            if incoming_filing_period_end is not None:
+                sd.shares_filing_period_end = incoming_filing_period_end
+            if incoming_filing_url is not None:
+                sd.shares_filing_url = incoming_filing_url
+            if incoming_data_refreshed_at is not None:
+                sd.shares_data_refreshed_at = incoming_data_refreshed_at
 
             company  = sd.profile.company_name if sd.profile else "NONE"
             sector   = sd.profile.sector       if sd.profile else "NONE"

@@ -1,0 +1,90 @@
+{
+  "ticker": "TSM",
+  "model_date": "2026-04-21",
+  "excel_base_case": {
+    "current_price": 362.825,
+    "revenue_growth": 0.1477,
+    "gross_margin_current": 0.5872,
+    "net_margin_current": 0.4503,
+    "eps_current": 10.6301,
+    "eps_forward": {
+      "y1_2026": 14.44,
+      "y2_2027": 17.8,
+      "y3_2028": 21.83
+    },
+    "price_target_base": 311.9,
+    "price_target_low": 163.61,
+    "price_target_high": 464.25,
+    "implied_multiple": 21.6,
+    "pe_range_low": 11.33,
+    "pe_range_high": 32.15,
+    "wacc": 0.0672,
+    "beta": 1.25
+  },
+  "model_diagnostics": {
+    "model_type": [
+      "stable_compounder"
+    ],
+    "primary_driver": "growth",
+    "assumption_quality": "high",
+    "flags": [
+      "EPS Y0 \u2192 Y1: $10.63 \u2192 $14.44.",
+      "EPS Y1\u2192Y3 CAGR: 23.0% (14.44 \u2192 21.83)."
+    ],
+    "consistency_check": {
+      "eps_times_multiple": 311.9,
+      "price_target_base": 311.9,
+      "deviation_pct": 0.0,
+      "passed": true
+    }
+  },
+  "normalized_assumptions": {
+    "growth_mean": 0.1477,
+    "growth_range": 0.08,
+    "margin_mean": 0.5872,
+    "margin_range": 0.06,
+    "multiple_center": 21.6,
+    "multiple_range": 8.64
+  },
+  "scenario_mapping": {
+    "bear": {
+      "growth": 0.1077,
+      "margin": 0.5572,
+      "multiple": 17.28,
+      "implied_price_target": 249.52
+    },
+    "base": {
+      "growth": 0.1477,
+      "margin": 0.5872,
+      "multiple": 21.6,
+      "implied_price_target": 311.9
+    },
+    "bull": {
+      "growth": 0.1877,
+      "margin": 0.6172,
+      "multiple": 25.92,
+      "implied_price_target": 374.28
+    }
+  },
+  "monte_carlo_mapping": {
+    "growth": {
+      "distribution": "normal",
+      "mean": 0.1477,
+      "sigma": 0.0267,
+      "skew": 0.0
+    },
+    "margin": {
+      "distribution": "normal",
+      "mean": 0.5872,
+      "sigma": 0.02,
+      "skew": 0.0
+    },
+    "multiple": {
+      "distribution": "normal",
+      "mean": 21.6,
+      "sigma": 2.88,
+      "skew": 0.0
+    },
+    "tail_profile": "normal"
+  }
+}

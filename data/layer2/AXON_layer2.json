@@ -1,0 +1,99 @@
+{
+  "ticker": "AXON",
+  "model_date": "2026-04-21",
+  "excel_base_case": {
+    "current_price": 403.17,
+    "revenue_growth": 0.5902,
+    "gross_margin_current": 0.5965,
+    "net_margin_current": 0.0448,
+    "eps_current": 1.5134,
+    "eps_forward": {
+      "y1_2026": 1.41,
+      "y2_2027": 3.03,
+      "y3_2028": 5.67
+    },
+    "price_target_base": 123.54,
+    "price_target_low": 66.83,
+    "price_target_high": 174.6,
+    "implied_multiple": 87.62,
+    "pe_range_low": 47.4,
+    "pe_range_high": 123.83,
+    "wacc": 0.0892,
+    "beta": 1.61
+  },
+  "model_diagnostics": {
+    "model_type": [
+      "cyclical",
+      "margin_recovery",
+      "binary_fat_tailed",
+      "acquisition_distorted"
+    ],
+    "primary_driver": "margin",
+    "assumption_quality": "low",
+    "flags": [
+      "Beta=1.61 \u2265 1.4 \u2014 classified as cyclical (no historical rev series available).",
+      "Gross margin (59.7%) vs net margin (4.5%): 55% spread \u2265 20% threshold \u2014 margin_recovery classification.",
+      "Model base PT ($123.54) is -69% below current price ($403.17) \u2014 binary_fat_tailed classification.",
+      "EPS_2026 (1.41) < EPS_CURRENT (1.51) despite positive growth assumption \u2014 binary_fat_tailed classification.",
+      "Revenue growth 59.0% > 30% \u2014 possible acquisition-distorted; verify organic run-rate before modelling as compound growth. Set ACQUISITION_DISTORTED: false to suppress if growth is organic.",
+      "Model base ($123.54) is -69.4% vs current price ($403.17).",
+      "EPS Y0 \u2192 Y1: $1.51 \u2192 $1.41.",
+      "EPS Y1\u2192Y3 CAGR: 100.5% (1.41 \u2192 5.67)."
+    ],
+    "consistency_check": {
+      "eps_times_multiple": 123.54,
+      "price_target_base": 123.54,
+      "deviation_pct": 0.0,
+      "passed": true
+    }
+  },
+  "normalized_assumptions": {
+    "growth_mean": 0.5902,
+    "growth_range": 0.4,
+    "margin_mean": 0.5965,
+    "margin_range": 0.24,
+    "multiple_center": 87.62,
+    "multiple_range": 105.144
+  },
+  "scenario_mapping": {
+    "bear": {
+      "growth": 0.3902,
+      "margin": 0.4765,
+      "multiple": 35.05,
+      "implied_price_target": 49.42
+    },
+    "base": {
+      "growth": 0.5902,
+      "margin": 0.5965,
+      "multiple": 87.62,
+      "implied_price_target": 123.54
+    },
+    "bull": {
+      "growth": 0.7902,
+      "margin": 0.7165,
+      "multiple": 140.19,
+      "implied_price_target": 197.67
+    }
+  },
+  "monte_carlo_mapping": {
+    "growth": {
+      "distribution": "fat-tailed",
+      "mean": 0.5902,
+      "sigma": 0.1333,
+      "skew": 0.0
+    },
+    "margin": {
+      "distribution": "fat-tailed",
+      "mean": 0.5965,
+      "sigma": 0.08,
+      "skew": 0.0
+    },
+    "multiple": {
+      "distribution": "fat-tailed",
+      "mean": 87.62,
+      "sigma": 35.048,
+      "skew": 0.0
+    },
+    "tail_profile": "fat-tailed"
+  }
+}

@@ -51,6 +51,38 @@ def _growth_score(rate: float | None, label: str) -> tuple[float, str]:
     return score, f"{label}: {pct:+.1f}% ({trend})"
 
 
+def _classify_growth_quality(
+    eps_cagr_pct: float,
+    rev_cagr_rate: float,
+) -> tuple:
+    """
+    Classify growth quality based on EPS CAGR vs revenue CAGR alignment.
+
+    Returns (is_leverage_driven: bool, label: str, detail: str).
+
+    Earnings-leverage-driven growth (EPS CAGR > 30% while revenue CAGR < 20%)
+    is less durable than organic revenue-led growth — it relies on margin
+    expansion, cost cuts, buybacks, or tax benefits that can reverse.
+    """
+    is_leverage = eps_cagr_pct > 30.0 and (rev_cagr_rate * 100) < 20.0
+    if is_leverage:
+        gap = eps_cagr_pct - (rev_cagr_rate * 100)
+        label  = "earnings-leverage-driven"
+        detail = (
+            f"EPS growth ({eps_cagr_pct:.1f}% CAGR) significantly outpaces "
+            f"revenue growth ({rev_cagr_rate*100:.1f}% CAGR) by {gap:.1f}pp — "
+            f"driven by margin expansion, cost reduction, or financial engineering "
+            f"rather than organic volume growth. Less durable; PEG weight reduced."
+        )
+    else:
+        label  = "revenue-driven" if rev_cagr_rate >= 0.10 else "mixed"
+        detail = (
+            f"EPS growth ({eps_cagr_pct:.1f}% CAGR) is broadly supported by "
+            f"revenue growth ({rev_cagr_rate*100:.1f}% CAGR) — organic and durable."
+        ) if not is_leverage else ""
+    return is_leverage, label, detail
+
+
 def score_growth(
     stock_data: StockData,
     weight: float = 0.20,
@@ -80,9 +112,11 @@ def score_growth(
     # ── EPS growth — use NormalizedMetrics CAGR when available ────────────────
     # metrics.eps_growth_pct is an annualized % (e.g. 12.5 means 12.5%).
     # Convert to a rate (0.125) for _growth_score.
+    _eps_cagr_pct: Optional[float] = None    # preserved for growth quality check
     if metrics is not None and metrics.eps_growth_pct is not None:
-        eps_rate = metrics.eps_growth_pct / 100.0
-        eps_s, eps_f = _growth_score(eps_rate, "EPS growth (3Y CAGR)")
+        eps_rate      = metrics.eps_growth_pct / 100.0
+        _eps_cagr_pct = metrics.eps_growth_pct
+        eps_s, eps_f  = _growth_score(eps_rate, "EPS growth (3Y CAGR)")
         print(
             f"  [GROWTH] EPS growth from NormalizedMetrics:"
             f" {metrics.eps_growth_pct:.1f}% → score={eps_s:.0f}"
@@ -99,8 +133,6 @@ def score_growth(
                 f"  [GROWTH] EPS growth: NormalizedMetrics.eps_growth_pct is None"
                 f" — falling back to raw YoY EPS"
             )
-    sub_scores.append((eps_s, 0.35))
-    factors.append(eps_f)
 
     # ── FCF growth ─────────────────────────────────────────────────────────────
     fcf_rate = None
@@ -108,16 +140,48 @@ def score_growth(
         if cfs[1].free_cash_flow > 0:
             fcf_rate = pct_change(cfs[0].free_cash_flow, cfs[1].free_cash_flow)
     fcf_s, fcf_f = _growth_score(fcf_rate, "FCF growth")
-    sub_scores.append((fcf_s, 0.20))
-    factors.append(fcf_f)
 
     # ── 3-year revenue CAGR ────────────────────────────────────────────────────
+    _rev_cagr_3y: Optional[float] = None     # preserved for growth quality check
     cagr_s, cagr_f = 50.0, "3Y revenue CAGR: N/A"
     if len(inc) >= 4 and inc[0].revenue and inc[3].revenue and inc[3].revenue > 0:
-        cagr = (inc[0].revenue / inc[3].revenue) ** (1 / 3) - 1
-        cagr_s, cagr_f = _growth_score(cagr, "3Y revenue CAGR")
-    sub_scores.append((cagr_s, 0.10))
+        _rev_cagr_3y = (inc[0].revenue / inc[3].revenue) ** (1 / 3) - 1
+        cagr_s, cagr_f = _growth_score(_rev_cagr_3y, "3Y revenue CAGR")
+
+    # ── Growth quality classification ─────────────────────────────────────────
+    # Requires the 3Y CAGR path for both EPS and revenue so the comparison is
+    # apples-to-apples (multi-year trends, not noisy single-year moves).
+    _is_leverage_driven = False
+    _gq_label           = "N/A"
+    if _eps_cagr_pct is not None and _rev_cagr_3y is not None:
+        _is_leverage_driven, _gq_label, _gq_detail = _classify_growth_quality(
+            _eps_cagr_pct, _rev_cagr_3y
+        )
+        if _is_leverage_driven:
+            # Reduce eps_growth sub-score: leverage-driven earnings are less durable.
+            # 15% haircut — meaningful but not punitive; real EPS growth still counts.
+            eps_s = max(eps_s * 0.85, 20.0)
+            eps_f = eps_f + " [quality-adjusted]"
+            print(
+                f"  [GROWTH] LOW_GROWTH_QUALITY: EPS CAGR={_eps_cagr_pct:.1f}%"
+                f" vs rev CAGR={_rev_cagr_3y*100:.1f}% → eps_s haircut 15%"
+            )
+
+    # ── Assemble sub-scores ───────────────────────────────────────────────────
+    sub_scores.append((eps_s,   0.35))
+    factors.append(eps_f)
+    sub_scores.append((fcf_s,   0.20))
+    factors.append(fcf_f)
+    sub_scores.append((cagr_s,  0.10))
     factors.append(cagr_f)
+
+    # Growth quality output line (always emitted when data allows classification)
+    if _eps_cagr_pct is not None and _rev_cagr_3y is not None:
+        factors.append(
+            f"Growth quality: {_gq_label} — "
+            + (_gq_detail if _gq_detail else
+               f"EPS CAGR {_eps_cagr_pct:.1f}% / Revenue CAGR {_rev_cagr_3y*100:.1f}%")
+        )
 
     total_w   = sum(w for _, w in sub_scores)
     composite = sum(s * w for s, w in sub_scores) / total_w
@@ -129,7 +193,14 @@ def score_growth(
         "missing"
     )
 
-    if composite >= 80:
+    # Reasoning — name the quality classification when it's material
+    if _is_leverage_driven:
+        reasoning = (
+            f"EPS growth ({_eps_cagr_pct:.1f}% CAGR) overstates growth quality — "
+            f"revenue CAGR ({_rev_cagr_3y*100:.1f}%) reveals earnings leverage, "
+            f"not organic expansion. Score adjusted."
+        )
+    elif composite >= 80:
         reasoning = "Company is growing rapidly across revenue, earnings, and cash flow."
     elif composite >= 60:
         reasoning = "Moderate but consistent growth — solid execution."

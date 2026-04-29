@@ -17,8 +17,10 @@ from analysis.growth import score_growth
 from analysis.health import score_financial_health
 from analysis.metrics import compute_confidence, compute_core_metrics
 from analysis.profitability import score_profitability
+from analysis.trend import detect_trends
 from analysis.valuation import score_valuation
 from analysis.valuation_range import compute_valuation_range
+from utils.helpers import clamp
 from agents.base_agent import BaseAgent
 from config import Config
 from models.message import AgentMessage, MessageType
@@ -64,6 +66,22 @@ class FundamentalAnalysisAgent(BaseAgent):
         # No scorer is allowed to re-derive PE, market cap, margins, etc.
         norm_metrics = compute_core_metrics(stock_data)
 
+        # ── Data Integrity check ───────────────────────────────────────────────
+        # Runs after NormalizedMetrics so all source annotations are available.
+        # ValidationResult flows downstream to risk scorer and reporting agent.
+        validation_result = None
+        try:
+            from analysis.data_integrity import run_data_integrity_check
+            validation_result = run_data_integrity_check(norm_metrics, stock_data)
+            # Apply integrity corrections back to NormalizedMetrics so ALL downstream
+            # scorers automatically use the corrected values (price override,
+            # recomputed PE/PS/EV). This is the "Metric Reliability Engine" coupling:
+            # the integrity check feeds corrections back into the single source of truth.
+            if validation_result is not None:
+                norm_metrics.apply_integrity_corrections(validation_result)
+        except Exception as _die:
+            print(f"  [INTEGRITY] check skipped: {_die}")
+
         # ── Run all four fundamental scorers — all fed normalized metrics ──────
         val_score = score_valuation(
             stock_data, weight=weights["valuation"], metrics=norm_metrics
@@ -101,11 +119,45 @@ class FundamentalAnalysisAgent(BaseAgent):
             for s in top_scores[:2]
         )
 
+        # ── Trend detection + score adjustments ───────────────────────────────
+        trends = None
+        try:
+            trends = detect_trends(stock_data)
+            if trends.growth_adj != 0.0:
+                gro_score.score = clamp(gro_score.score + trends.growth_adj)
+                gro_score.factors.append(
+                    f"Trend adjustment ({trends.revenue_growth} revenue trend): "
+                    f"{trends.growth_adj:+.0f}pts"
+                )
+                print(
+                    f"  [TREND] growth_adj={trends.growth_adj:+.0f}"
+                    f" revenue={trends.revenue_growth}"
+                )
+            if trends.profitability_adj != 0.0:
+                pro_score.score = clamp(pro_score.score + trends.profitability_adj)
+                pro_score.factors.append(
+                    f"Trend adjustment ({trends.op_margin} margin trend): "
+                    f"{trends.profitability_adj:+.0f}pts"
+                )
+                print(
+                    f"  [TREND] prof_adj={trends.profitability_adj:+.0f}"
+                    f" op_margin={trends.op_margin}"
+                )
+            # Apply confidence penalty for volatile metrics
+            if trends.confidence_penalty > 0.0:
+                confidence = max(0.05, confidence - trends.confidence_penalty)
+                print(
+                    f"  [TREND] volatile metrics → confidence_penalty={trends.confidence_penalty:.2f}"
+                    f" → confidence={confidence:.3f}"
+                )
+        except Exception as _te:
+            print(f"  [TREND] detection skipped: {_te}")
+
         # ── Valuation range (scenario analysis) ───────────────────────────────
         # Isolated in try/except: a crash here must NOT prevent scores from
         # being returned.  Scores are more important than scenario analysis.
         try:
-            val_range = compute_valuation_range(stock_data, metrics=norm_metrics)
+            val_range = compute_valuation_range(stock_data, metrics=norm_metrics, trends=trends)
         except Exception as exc:
             import traceback as _tb
             print(f"  [FUND WARN] compute_valuation_range failed: {exc}")
@@ -125,6 +177,11 @@ class FundamentalAnalysisAgent(BaseAgent):
                 # NormalizedMetrics flows downstream so risk/reporting agents
                 # and web_api can reuse it without recomputing.
                 "normalized_metrics": norm_metrics,
+                # ValidationResult carries integrity flags and per-metric
+                # confidence for risk scoring and report DATA QUALITY section.
+                "validation": validation_result,
+                # TrendResult carries per-metric trends and signals for display
+                "trends": trends,
             },
             confidence=confidence,
             reasoning_summary=f"Fundamental analysis complete. {summary}",

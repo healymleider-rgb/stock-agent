@@ -1,0 +1,108 @@
+{
+  "_comment": "Manual archetype overrides. Keys are tickers (uppercase). Archetype IDs: 1=Banks 2=AssetManagers 3=Insurance 4=Exchanges 5=FinancialData 6=InvestmentBanks 7=Fintech 8=Other",
+
+  "BRK.B": {
+    "archetype": 8,
+    "reason": "Conglomerate — diversified across railroads, utilities, manufacturing, insurance. No comparable pure play."
+  },
+  "BRK.A": {
+    "archetype": 8,
+    "reason": "Conglomerate — same as BRK.B (different share class)."
+  },
+  "SCHW": {
+    "archetype": 1,
+    "reason": "Bank sweep deposits dominate economics (>50% of liabilities). Interest income > 50% of revenue. Classify as Banks despite broker-dealer SIC."
+  },
+  "COIN": {
+    "archetype": 4,
+    "reason": "Crypto exchange — volume-dependent capture rate, not a lending/payments fintech. Peers: CME, ICE (by business model)."
+  },
+  "V": {
+    "archetype": 4,
+    "reason": "Pure payment network — no credit risk on books, revenue is network fees. Classify as Exchanges/Market Infrastructure."
+  },
+  "MA": {
+    "archetype": 4,
+    "reason": "Pure payment network — same as Visa. Peers: V, GPN, FIS, FISV."
+  },
+  "MSCI": {
+    "archetype": 5,
+    "reason": "Index and analytics provider with ARR economics. NOT peers with stock exchanges despite running indices."
+  },
+  "SPGI": {
+    "archetype": 5,
+    "reason": "Financial data, ratings, and analytics. Largest revenue segment is S&P Global Market Intelligence (data/analytics)."
+  },
+  "MCO": {
+    "archetype": 5,
+    "reason": "Moody's — credit ratings and analytics. Financial data archetype despite 6211 SIC."
+  },
+  "FDS": {
+    "archetype": 5,
+    "reason": "FactSet — financial data and analytics platform."
+  },
+  "MORN": {
+    "archetype": 5,
+    "reason": "Morningstar — investment research, ratings, and data. ARR-driven economics."
+  },
+  "ICE": {
+    "archetype": 4,
+    "reason": "IntercontinentalExchange — exchange and data hybrid. Exchange economics dominant."
+  },
+  "CME": {
+    "archetype": 4,
+    "reason": "CME Group — derivatives exchange, volume-driven revenue."
+  },
+  "CBOE": {
+    "archetype": 4,
+    "reason": "Cboe Global Markets — options exchange, transaction fee model."
+  },
+  "NDAQ": {
+    "archetype": 4,
+    "reason": "Nasdaq Inc — exchange + data/analytics hybrid. Exchange archetype given dominant revenue share."
+  },
+  "BLK": {
+    "archetype": 2,
+    "reason": "BlackRock — pure asset manager by economics. AUM and fee rate are the primary value drivers."
+  },
+  "BX": {
+    "archetype": 2,
+    "reason": "Blackstone — alternative asset manager. Fee-related earnings and AUM are primary drivers."
+  },
+  "APO": {
+    "archetype": 2,
+    "reason": "Apollo Global — alternative asset manager, FRE-driven."
+  },
+  "KKR": {
+    "archetype": 2,
+    "reason": "KKR & Co — alternative asset manager, fee-related earnings model."
+  },
+  "AFRM": {
+    "archetype": 7,
+    "reason": "Affirm — BNPL/lending fintech. Take rate and credit loss are primary economics."
+  },
+  "SQ": {
+    "archetype": 7,
+    "reason": "Block (Square) — fintech platform combining payments and banking. Fintech, not pure exchange."
+  },
+  "PYPL": {
+    "archetype": 7,
+    "reason": "PayPal — fintech platform. Has significant credit exposure (BNPL). Fintech archetype."
+  },
+  "GS": {
+    "archetype": 6,
+    "reason": "Goldman Sachs — investment bank. Trading + advisory are dominant revenue segments."
+  },
+  "MS": {
+    "archetype": 6,
+    "reason": "Morgan Stanley — investment bank + wealth management hybrid. IB archetype given balance."
+  },
+  "LAZ": {
+    "archetype": 6,
+    "reason": "Lazard — pure advisory investment bank. No trading book."
+  },
+  "EVR": {
+    "archetype": 6,
+    "reason": "Evercore — pure advisory investment bank."
+  }
+}

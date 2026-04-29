@@ -120,6 +120,61 @@ mfg_employment) remain required. Commit SHA: pending.
 
 ---
 
+---
+
+## Finding 3 — FMP /quote sharesOutstanding always None [RESOLVED 2026-04-28]
+
+**Discovered:** 2026-04-28
+**Block that catches it:** Block 2 (Market Cap Triangle), indirectly — the root symptom
+was NI/EPS-derived shares drifting 3–9% from SEC-reported share counts.
+**Severity:** Moderate — share count feeds market cap, EV, and all per-share ratios.
+A 7% drift in CVX shares directly distorted EV/EBITDA and market cap computation.
+
+**Symptom:**
+`FMPProvider.get_profile()` always returns `shares_outstanding=None` despite calling
+`quote.get("sharesOutstanding")`. On the FMP stable API, `/quote` silently omits the
+`sharesOutstanding` field (returns None) for all tickers tested.
+
+With `shares_outstanding=None`, `compute_core_metrics` falls through to the NI/EPS
+fallback (`NI ÷ epsDiluted`). This derivation uses fiscal-year-average diluted share
+count, which diverges from the current actual share count due to buybacks and issuances:
+
+| Ticker | NI/EPS fallback | Actual (SEC) | Drift |
+|--------|----------------|-------------|-------|
+| AXON   |  82,722,517    |  80,397,700 | +2.9% |
+| PYPL   | 967,282,810    | 920,665,000 | +5.1% |
+| CVX    | 1,855,052,790  | 1,995,390,000 | −7.0% |
+
+**Root cause:**
+FMP's stable API `/quote` endpoint does not return `sharesOutstanding` in the field
+list visible to clients on this tier. The field exists but is always null. Confirmed
+on 2026-04-28 across AXON, PYPL, CVX.
+
+**Endpoints investigated:**
+- `/quote sharesOutstanding` — Always None on stable API ❌
+- `/enterprise-values numberOfShares` — Returns data but lags actual and disagrees
+  with `/shares-float` by 4–8% ❌
+- `/shares-float outstandingShares` — Returns SEC EDGAR-sourced counts with full
+  provenance (filing date, direct SEC document URL) ✓
+
+**Resolution (2026-04-28):** Added `FMPClient.fetch_shares_float()` returning a
+provenance dict `{shares, source, filing_date, filing_url, fetched_at}`. In
+`FMPProvider.get_profile()`, if `/quote sharesOutstanding` is None, fall back to
+`/shares-float` before the NI/EPS path in `metrics.py` ever runs.
+
+Provenance threaded through the full data path:
+- `ProfileResult.shares_source / shares_filing_date / shares_filing_url` (new fields)
+- `StockData.shares_source / shares_filing_date / shares_filing_url` (new fields)
+- `NormalizedMetrics.shares_source / shares_filing_date / shares_filing_url` (new fields)
+- `snapshot.shares_b.filing_date / filing_url` (visible in validation log)
+
+Post-fix drift vs SEC for all three tickers: AXON 0.00%, PYPL −2.28%, CVX 0.00%.
+All 10 validation blocks continue to pass. Test suite: 129 passed.
+
+**Owner:** [unknown — fill in]
+
+---
+
 ## Finding tracking
 
 When a finding is resolved:

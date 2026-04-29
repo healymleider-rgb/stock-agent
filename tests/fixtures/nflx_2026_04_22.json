@@ -1,0 +1,341 @@
+{
+  "as_of": "2026-04-22T10:30:00Z",
+  "equity_nflx": {
+    "kind": "equity",
+    "schema_version": "1.0",
+    "asset_id": "NFLX",
+    "identifier_type": "ticker",
+    "quantity": 1253,
+    "market_value": 115999.74,
+    "weight": 0.100,
+    "state": "current",
+    "parse_provenance": {
+      "source_type": "api",
+      "parser_confidence": 1.0,
+      "advisor_confirmed": true,
+      "confirmed_at": "2026-04-22T09:00:00Z",
+      "confirmed_by": "advisor_001"
+    },
+    "advisor_overrides": [],
+    "ticker": "NFLX",
+    "as_of": "2026-04-21T18:05:00Z",
+    "price": {"value": 92.58, "source": "FMP", "vintage": "2026-04-21T16:00:00Z"},
+    "shares_diluted_b": {"value": 4.298, "source": "Q1 2026 letter", "vintage": "2026-04-17"},
+    "market_cap_b": {"value": 397.91, "derived": true},
+    "eps": {
+      "ttm": {"value": 3.10, "source": "company_filing_10Q_NFLX_2026Q1", "quarters": [0.72, 0.59, 0.56, 1.23], "vintage": "2026-04-17"},
+      "basis_used_in_report": "ttm"
+    },
+    "multiples": {
+      "pe": {"value": 29.9, "basis": "TTM", "derived": true, "formula": "92.58 / 3.10"},
+      "ps": {"value": 8.9, "derived": true, "formula": "397.91 / 44.71"},
+      "ev_ebitda": {"value": 13.5, "derived": true, "formula": "(397.91 + 15.02 - 9.07) / 29.8"},
+      "peg": {"value": 0.7, "derived": true, "formula": "29.9 / 42.71"}
+    },
+    "scenarios": {
+      "bear": {"price": 76.75, "rev_g": 0.076, "op_margin": 0.275, "fcf_conv": 0.692, "exit_mult": 36.6, "fwd_fcf_b": 9.3},
+      "base": {"price": 122.72, "rev_g": 0.126, "op_margin": 0.305, "fcf_conv": 0.805, "exit_mult": 43.0, "fwd_fcf_b": 12.5},
+      "bull": {"price": 168.58, "rev_g": 0.176, "op_margin": 0.325, "fcf_conv": 0.862, "exit_mult": 49.5, "fwd_fcf_b": 14.9}
+    },
+    "distribution": {
+      "mode": "deterministic_anchored",
+      "percentiles": {
+        "p5": 76.75, "p10": 86.99, "p20": 97.23, "p25": 97.18, "p40": 115.49,
+        "p50": 122.72, "p60": 133.06, "p75": 148.20, "p80": 152.29, "p90": 162.30, "p95": 168.58
+      }
+    },
+    "expected_return": {
+      "weights": {"bear": 0.25, "base": 0.50, "bull": 0.25},
+      "value": 0.325,
+      "derived": true,
+      "invariant_min_max_check": true
+    },
+    "macro": {
+      "regime": "Expansion / Mid Cycle",
+      "macro_score": 69,
+      "series": {
+        "yield_curve_2s10s": {"value": 0.52, "source": "FRED:T10Y2Y", "vintage": "2026-04-21"},
+        "jobless_claims_k": {"value": 207, "source": "FRED:ICSA", "vintage": "2026-04-17"},
+        "housing_starts_k": {"value": 1487, "source": "FRED:HOUST", "vintage": "2026-04-16"},
+        "manuf_employ_k": {"value": 12591, "source": "FRED:MANEMP", "vintage": "2026-04-05"},
+        "cli": {"value": null, "status": "excluded_stale", "reason": "OECD CLI data too stale to use"}
+      }
+    },
+    "execution": {
+      "thesis": "Buy",
+      "valuation_tier": "Deep Value",
+      "execution": "STAGED_BUY",
+      "conviction": "Low",
+      "target_size_pct": 1.5,
+      "recommended_now_pct": 0.5,
+      "triggers": {
+        "buy": "Phase 1: initiate at current price ($92.58)",
+        "add": "Phase 2: 5-10% dip from Phase 1. Phase 3: trend confirmation.",
+        "trim": "Price reaches $158.57 (P75) - trim 25-50% of position",
+        "exit": "Price reaches $185.44 (P95) or fundamental thesis break"
+      }
+    },
+    "risk": {"beta": 1.67, "max_drawdown": 0.43, "flags": ["high_beta", "content_heavy_business"]},
+    "dividend": {"annual_per_share": 0.0, "yield": 0.0}
+  },
+  "municipal_bond_sacramento": {
+    "kind": "muni_bond",
+    "schema_version": "1.0",
+    "asset_id": "786116QR2",
+    "identifier_type": "cusip",
+    "state": "current",
+    "parse_provenance": {
+      "source_type": "pdf_parse",
+      "source_pdf_filename": "terri_nelson_exempt_trust_2026-04-16.pdf",
+      "source_pdf_hash": "sha256:3a9f2c1d8e4b7a0f5c6d2e1b9a8f3c7d4e2b1a0f9c8d7e6b5a4f3c2d1e0b9a8f",
+      "page_number": 4,
+      "parser_confidence": 0.97,
+      "advisor_confirmed": true,
+      "confirmed_at": "2026-04-22T09:05:00Z",
+      "confirmed_by": "advisor_001"
+    },
+    "advisor_overrides": [],
+    "name": "Sacramento CNTY Calif Santn Rev 5% 12/01/50-CA JD Dist Fing Auth",
+    "cusip": "786116QR2",
+    "quantity": 285,
+    "price": {"value": 1040.21, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "market_value": 301804.00,
+    "cost_basis": {"value": 329344.00, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "unrealized_gain_loss": -32884.00,
+    "coupon_rate": {"value": 0.05, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "current_yield": {"value": 0.0481, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "maturity_date": "2050-12-01",
+    "projected_annual_income": {"value": 14250.00, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "modified_duration": {"value": 14.1, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+    "yield_to_maturity": {"value": 0.0476, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+    "yield_to_call": {"value": 0.0382, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+    "yield_to_worst": {"value": 0.0382, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+    "taxable_equivalent_yield": {
+      "value": 0.0968,
+      "basis_yield": 0.0481,
+      "basis_yield_field": "current_yield",
+      "federal_rate_used": 0.37,
+      "state_rate_used": 0.133,
+      "amt_adjustment_applied": false,
+      "formula": "0.0481 / (1 - 0.37 - 0.133)",
+      "computed_at": "2026-04-22T09:12:00Z",
+      "tax_context_snapshot": {
+        "state_of_residence": "CA",
+        "marginal_federal_rate": 0.37,
+        "marginal_state_rate": 0.133,
+        "amt_applicable": false
+      }
+    },
+    "muni_detail": {
+      "issuer": "Sacramento County Sanitation Districts Financing Authority",
+      "issue_state": "CA",
+      "security_type": "Revenue bond (essential service - sanitation)",
+      "sector": "Sanitation",
+      "tax_status_federal": "tax_exempt",
+      "tax_status_state": "CA tax-exempt for CA residents",
+      "amt_subject": false,
+      "credit_ratings": {
+        "sp": {"rating": "AA", "outlook": "stable", "vintage": "2024-11-12", "stale": true},
+        "moodys": {"rating": "Aa2", "outlook": "stable", "vintage": "2024-09-03", "stale": true},
+        "fitch": {"value": null, "status": "not_rated", "reason": "Fitch does not rate this issuer"}
+      },
+      "call_features": {"first_call_date": "2030-12-01", "call_price": 100.00, "currently_callable": false},
+      "continuing_disclosures": {
+        "most_recent_annual_filing": "2025-06-30",
+        "material_event_notices_last_24m": 0,
+        "default_history": false
+      },
+      "trade_liquidity": {
+        "last_trade_date": "2026-04-15",
+        "last_trade_price": 1041.50,
+        "last_trade_size_face": 50000,
+        "trades_per_month_approx": 8,
+        "liquidity_tier": "moderate"
+      },
+      "material_event_notice_active": false,
+      "data_source": "emma_manual",
+      "data_as_of": "2026-04-22T09:08:00Z"
+    },
+    "weight": 0.260
+  },
+  "cash_goldman_mmf": {
+    "kind": "cash",
+    "schema_version": "1.0",
+    "asset_id": "FGTXX",
+    "identifier_type": "ticker",
+    "state": "current",
+    "parse_provenance": {
+      "source_type": "pdf_parse",
+      "source_pdf_filename": "terri_nelson_exempt_trust_2026-04-16.pdf",
+      "source_pdf_hash": "sha256:3a9f2c1d8e4b7a0f5c6d2e1b9a8f3c7d4e2b1a0f9c8d7e6b5a4f3c2d1e0b9a8f",
+      "page_number": 6,
+      "parser_confidence": 0.99,
+      "advisor_confirmed": true,
+      "confirmed_at": "2026-04-22T09:05:00Z",
+      "confirmed_by": "advisor_001"
+    },
+    "advisor_overrides": [],
+    "name": "Goldman Sachs Financial Square Treasury Fund",
+    "cash_type": "money_market",
+    "quantity": 179500,
+    "price": 1.00,
+    "market_value": 179500.00,
+    "yield_annual": {"value": 0.0361, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "projected_annual_income": {"value": 6475.00, "source": "brokerage_statement", "vintage": "2026-04-16"},
+    "fdic_insured": false,
+    "sec_registered": true,
+    "weight": 0.155
+  },
+  "client_tax_context_california": {
+    "state_of_residence": "CA",
+    "marginal_federal_rate": 0.37,
+    "marginal_state_rate": 0.133,
+    "amt_applicable": false,
+    "notes": "Terri Nelson Exempt Trust - top federal bracket, CA resident"
+  },
+  "portfolio_current_3_holding": {
+    "schema_version": "1.0",
+    "portfolio_id": "portfolio_terri_nelson_2026-04-22_current",
+    "client_id": "terri_nelson_exempt_trust",
+    "state": "current",
+    "as_of": "2026-04-22T00:00:00Z",
+    "tax_context": {
+      "state_of_residence": "CA",
+      "marginal_federal_rate": 0.37,
+      "marginal_state_rate": 0.133,
+      "amt_applicable": false
+    },
+    "holdings": [
+      {
+        "kind": "equity",
+        "schema_version": "1.0",
+        "asset_id": "NFLX",
+        "identifier_type": "ticker",
+        "quantity": 1253,
+        "market_value": 115999.74,
+        "weight": 0.100,
+        "state": "current",
+        "parse_provenance": {"source_type": "api", "parser_confidence": 1.0, "advisor_confirmed": true, "confirmed_at": "2026-04-22T09:00:00Z", "confirmed_by": "advisor_001"},
+        "advisor_overrides": [],
+        "ticker": "NFLX",
+        "as_of": "2026-04-21T18:05:00Z",
+        "price": {"value": 92.58, "source": "FMP", "vintage": "2026-04-21T16:00:00Z"},
+        "shares_diluted_b": {"value": 4.298, "source": "Q1 2026 letter", "vintage": "2026-04-17"},
+        "market_cap_b": {"value": 397.91, "derived": true},
+        "eps": {"ttm": {"value": 3.10, "source": "company_filing_10Q_NFLX_2026Q1", "quarters": [0.72, 0.59, 0.56, 1.23], "vintage": "2026-04-17"}, "basis_used_in_report": "ttm"},
+        "multiples": {"pe": {"value": 29.9, "basis": "TTM", "derived": true, "formula": "92.58 / 3.10"}, "ps": {"value": 8.9, "derived": true, "formula": "397.91 / 44.71"}, "ev_ebitda": {"value": 13.5, "derived": true, "formula": "(397.91 + 15.02 - 9.07) / 29.8"}, "peg": {"value": 0.7, "derived": true, "formula": "29.9 / 42.71"}},
+        "scenarios": {
+          "bear": {"price": 76.75, "rev_g": 0.076, "op_margin": 0.275, "fcf_conv": 0.692, "exit_mult": 36.6, "fwd_fcf_b": 9.3},
+          "base": {"price": 122.72, "rev_g": 0.126, "op_margin": 0.305, "fcf_conv": 0.805, "exit_mult": 43.0, "fwd_fcf_b": 12.5},
+          "bull": {"price": 168.58, "rev_g": 0.176, "op_margin": 0.325, "fcf_conv": 0.862, "exit_mult": 49.5, "fwd_fcf_b": 14.9}
+        },
+        "distribution": {"mode": "deterministic_anchored", "percentiles": {"p5": 76.75, "p10": 86.99, "p20": 97.23, "p25": 97.18, "p40": 115.49, "p50": 122.72, "p60": 133.06, "p75": 148.20, "p80": 152.29, "p90": 162.30, "p95": 168.58}},
+        "expected_return": {"weights": {"bear": 0.25, "base": 0.50, "bull": 0.25}, "value": 0.325, "derived": true, "invariant_min_max_check": true},
+        "macro": {
+          "regime": "Expansion / Mid Cycle",
+          "macro_score": 69,
+          "series": {
+            "yield_curve_2s10s": {"value": 0.52, "source": "FRED:T10Y2Y", "vintage": "2026-04-21"},
+            "jobless_claims_k": {"value": 207, "source": "FRED:ICSA", "vintage": "2026-04-17"},
+            "housing_starts_k": {"value": 1487, "source": "FRED:HOUST", "vintage": "2026-04-16"},
+            "manuf_employ_k": {"value": 12591, "source": "FRED:MANEMP", "vintage": "2026-04-05"},
+            "cli": {"value": null, "status": "excluded_stale", "reason": "OECD CLI data too stale to use"}
+          }
+        },
+        "execution": {"thesis": "Buy", "valuation_tier": "Deep Value", "execution": "STAGED_BUY", "conviction": "Low", "target_size_pct": 1.5, "recommended_now_pct": 0.5, "triggers": {"buy": "Phase 1: initiate at current price ($92.58)", "add": "Phase 2: 5-10% dip from Phase 1. Phase 3: trend confirmation.", "trim": "Price reaches $158.57 (P75) - trim 25-50% of position", "exit": "Price reaches $185.44 (P95) or fundamental thesis break"}},
+        "risk": {"beta": 1.67, "max_drawdown": 0.43, "flags": ["high_beta", "content_heavy_business"]},
+        "dividend": {"annual_per_share": 0.0, "yield": 0.0}
+      },
+      {
+        "kind": "muni_bond",
+        "schema_version": "1.0",
+        "asset_id": "786116QR2",
+        "identifier_type": "cusip",
+        "state": "current",
+        "parse_provenance": {"source_type": "pdf_parse", "source_pdf_filename": "terri_nelson_exempt_trust_2026-04-16.pdf", "source_pdf_hash": "sha256:3a9f2c1d8e4b7a0f5c6d2e1b9a8f3c7d4e2b1a0f9c8d7e6b5a4f3c2d1e0b9a8f", "page_number": 4, "parser_confidence": 0.97, "advisor_confirmed": true, "confirmed_at": "2026-04-22T09:05:00Z", "confirmed_by": "advisor_001"},
+        "advisor_overrides": [],
+        "name": "Sacramento CNTY Calif Santn Rev 5% 12/01/50-CA JD Dist Fing Auth",
+        "cusip": "786116QR2",
+        "quantity": 285,
+        "price": {"value": 1040.21, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "market_value": 301804.00,
+        "cost_basis": {"value": 329344.00, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "unrealized_gain_loss": -32884.00,
+        "coupon_rate": {"value": 0.05, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "current_yield": {"value": 0.0481, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "maturity_date": "2050-12-01",
+        "projected_annual_income": {"value": 14250.00, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "modified_duration": {"value": 14.1, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+        "yield_to_maturity": {"value": 0.0476, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+        "yield_to_call": {"value": 0.0382, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+        "yield_to_worst": {"value": 0.0382, "source": "bond_analyzer_v1", "vintage": "2026-04-22T09:10:00Z"},
+        "taxable_equivalent_yield": {
+          "value": 0.0968,
+          "basis_yield": 0.0481,
+          "basis_yield_field": "current_yield",
+          "federal_rate_used": 0.37,
+          "state_rate_used": 0.133,
+          "amt_adjustment_applied": false,
+          "formula": "0.0481 / (1 - 0.37 - 0.133)",
+          "computed_at": "2026-04-22T09:12:00Z",
+          "tax_context_snapshot": {
+            "state_of_residence": "CA",
+            "marginal_federal_rate": 0.37,
+            "marginal_state_rate": 0.133,
+            "amt_applicable": false
+          }
+        },
+        "muni_detail": {
+          "issuer": "Sacramento County Sanitation Districts Financing Authority",
+          "issue_state": "CA",
+          "security_type": "Revenue bond (essential service - sanitation)",
+          "sector": "Sanitation",
+          "tax_status_federal": "tax_exempt",
+          "tax_status_state": "CA tax-exempt for CA residents",
+          "amt_subject": false,
+          "credit_ratings": {
+            "sp": {"rating": "AA", "outlook": "stable", "vintage": "2024-11-12", "stale": true},
+            "moodys": {"rating": "Aa2", "outlook": "stable", "vintage": "2024-09-03", "stale": true},
+            "fitch": {"value": null, "status": "not_rated", "reason": "Fitch does not rate this issuer"}
+          },
+          "call_features": {"first_call_date": "2030-12-01", "call_price": 100.00, "currently_callable": false},
+          "continuing_disclosures": {"most_recent_annual_filing": "2025-06-30", "material_event_notices_last_24m": 0, "default_history": false},
+          "trade_liquidity": {"last_trade_date": "2026-04-15", "last_trade_price": 1041.50, "last_trade_size_face": 50000, "trades_per_month_approx": 8, "liquidity_tier": "moderate"},
+          "material_event_notice_active": false,
+          "data_source": "emma_manual",
+          "data_as_of": "2026-04-22T09:08:00Z"
+        },
+        "weight": 0.260
+      },
+      {
+        "kind": "cash",
+        "schema_version": "1.0",
+        "asset_id": "FGTXX",
+        "identifier_type": "ticker",
+        "state": "current",
+        "parse_provenance": {"source_type": "pdf_parse", "source_pdf_filename": "terri_nelson_exempt_trust_2026-04-16.pdf", "source_pdf_hash": "sha256:3a9f2c1d8e4b7a0f5c6d2e1b9a8f3c7d4e2b1a0f9c8d7e6b5a4f3c2d1e0b9a8f", "page_number": 6, "parser_confidence": 0.99, "advisor_confirmed": true, "confirmed_at": "2026-04-22T09:05:00Z", "confirmed_by": "advisor_001"},
+        "advisor_overrides": [],
+        "name": "Goldman Sachs Financial Square Treasury Fund",
+        "cash_type": "money_market",
+        "quantity": 179500,
+        "price": 1.00,
+        "market_value": 179500.00,
+        "yield_annual": {"value": 0.0361, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "projected_annual_income": {"value": 6475.00, "source": "brokerage_statement", "vintage": "2026-04-16"},
+        "fdic_insured": false,
+        "sec_registered": true,
+        "weight": 0.155
+      }
+    ],
+    "total_market_value": 1160785.00,
+    "notes": "Illustrative 3-holding excerpt anchored to Sacramento muni at 26%; remaining ~48.5% of portfolio in unlisted holdings"
+  },
+  "corrections": [
+    {"field": "municipal_bond_sacramento.muni_detail.credit_ratings.sp.stale", "old_value": false, "new_value": true, "reason": "S&P vintage 2024-11-12 is 526 days before portfolio as_of 2026-04-22, exceeding the 180-day staleness threshold"},
+    {"field": "municipal_bond_sacramento.muni_detail.credit_ratings.moodys.stale", "old_value": false, "new_value": true, "reason": "Moody's vintage 2024-09-03 is 596 days before portfolio as_of 2026-04-22, exceeding the 180-day staleness threshold"},
+    {"field": "municipal_bond_sacramento.market_value", "old_value": 296459.85, "new_value": 301804.00, "reason": "Statement market value $301,804 is the dirty price; quantity x price gives clean-price total only; invariant explicitly relaxed for bonds"},
+    {"field": "cash_goldman_mmf.weight", "old_value": 0.158, "new_value": 0.155, "reason": "$179,500 / $1,160,785 = 15.47%; prompt stated 15.8% which would require $183,404 in the MMF inconsistent with the statement value"},
+    {"field": "equity_nflx.market_value", "old_value": 116000.00, "new_value": 115999.74, "reason": "1253 shares x $92.58 = $115,999.74; rounded value violated the quantity x price.value invariant"},
+    {"field": "prompt.invariant.tey_formula", "old_value": "ty = current_yield x (1 - federal_rate_effective)", "new_value": "TEY = current_yield / (1 - federal_rate_used - state_rate_used)", "reason": "Multiplication form would produce a yield lower than the muni yield; division is the correct TEY formula"}
+  ]
+}

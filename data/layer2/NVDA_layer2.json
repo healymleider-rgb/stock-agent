@@ -1,0 +1,94 @@
+{
+  "ticker": "NVDA",
+  "model_date": "2026-04-21",
+  "excel_base_case": {
+    "current_price": 198.2601,
+    "revenue_growth": 0.3193,
+    "gross_margin_current": 0.7499,
+    "net_margin_current": 0.5585,
+    "eps_current": 2.9382,
+    "eps_forward": {
+      "y1_2026": 4.69,
+      "y2_2027": 8.15,
+      "y3_2028": 10.77
+    },
+    "price_target_base": 332.29,
+    "price_target_low": 129.91,
+    "price_target_high": 541.37,
+    "implied_multiple": 70.85,
+    "pe_range_low": 27.7,
+    "pe_range_high": 115.43,
+    "wacc": 0.0695,
+    "beta": 2.34
+  },
+  "model_diagnostics": {
+    "model_type": [
+      "cyclical",
+      "acquisition_distorted"
+    ],
+    "primary_driver": "growth",
+    "assumption_quality": "medium",
+    "flags": [
+      "Beta=2.34 \u2265 1.4 \u2014 classified as cyclical (no historical rev series available).",
+      "Revenue growth 31.9% > 30% \u2014 possible acquisition-distorted; verify organic run-rate before modelling as compound growth. Set ACQUISITION_DISTORTED: false to suppress if growth is organic.",
+      "Model base ($332.29) is +67.6% vs current price ($198.26).",
+      "EPS Y0 \u2192 Y1: $2.94 \u2192 $4.69.",
+      "EPS Y1\u2192Y3 CAGR: 51.5% (4.69 \u2192 10.77)."
+    ],
+    "consistency_check": {
+      "eps_times_multiple": 332.29,
+      "price_target_base": 332.29,
+      "deviation_pct": 0.0,
+      "passed": true
+    }
+  },
+  "normalized_assumptions": {
+    "growth_mean": 0.3193,
+    "growth_range": 0.3,
+    "margin_mean": 0.7499,
+    "margin_range": 0.2,
+    "multiple_center": 70.85,
+    "multiple_range": 70.85
+  },
+  "scenario_mapping": {
+    "bear": {
+      "growth": 0.1693,
+      "margin": 0.6499,
+      "multiple": 35.42,
+      "implied_price_target": 166.12
+    },
+    "base": {
+      "growth": 0.3193,
+      "margin": 0.7499,
+      "multiple": 70.85,
+      "implied_price_target": 332.29
+    },
+    "bull": {
+      "growth": 0.4693,
+      "margin": 0.8499,
+      "multiple": 106.27,
+      "implied_price_target": 498.41
+    }
+  },
+  "monte_carlo_mapping": {
+    "growth": {
+      "distribution": "uniform",
+      "mean": 0.3193,
+      "sigma": 0.1,
+      "skew": 0.0
+    },
+    "margin": {
+      "distribution": "uniform",
+      "mean": 0.7499,
+      "sigma": 0.0667,
+      "skew": 0.0
+    },
+    "multiple": {
+      "distribution": "uniform",
+      "mean": 70.85,
+      "sigma": 23.6167,
+      "skew": 0.0
+    },
+    "tail_profile": "fat-tailed"
+  }
+}

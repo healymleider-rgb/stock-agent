@@ -45,6 +45,7 @@ Stable endpoints used
 from __future__ import annotations
 
 import datetime
+import re
 import time
 from typing import Any, Optional
 
@@ -274,6 +275,7 @@ class FMPClient:
                 rd_expenses=safe_float(raw.get("researchAndDevelopmentExpenses")),
                 selling_expenses=safe_float(raw.get("sellingGeneralAndAdministrativeExpenses")),
                 interest_expense=safe_float(raw.get("interestExpense")),
+                filing_date=raw.get("filingDate") or None,
             ))
         return results
 
@@ -658,6 +660,61 @@ class FMPClient:
         peers = raw.get("peersList", [])
         return [str(t) for t in peers if t and t != symbol]
 
+    def fetch_shares_float(self, symbol: str) -> Optional[dict[str, Any]]:
+        """
+        Return SEC-sourced share count via FMP's /shares-float endpoint.
+
+        FMP sources this data directly from SEC EDGAR filings and includes
+        a direct filing URL, making every derived value fully auditable.
+
+        Returns dict with:
+          {
+            "shares":             float,        # outstandingShares from SEC filing
+            "source":             str,           # "FMP/shares-float (SEC EDGAR)"
+            "filing_url":         str,           # Direct SEC EDGAR URL
+            "filing_period_end":  str | None,    # Fiscal period end, e.g. "2025-12-31"
+                                                 # (parsed from filing_url path)
+            "data_refreshed_at":  str,           # When FMP last refreshed this record
+                                                 # (NOT the SEC filing date)
+            "fetched_at":         str,           # ISO timestamp of this fetch
+          }
+
+        Returns None on miss or if outstandingShares is absent.
+        """
+        data = self._get("/shares-float", {"symbol": symbol})
+
+        record: Optional[dict[str, Any]] = None
+        if isinstance(data, dict):
+            record = data
+        elif isinstance(data, list) and data:
+            record = data[0]
+
+        if not record:
+            return None
+
+        shares = safe_float(record.get("outstandingShares"))
+        if shares is None:
+            return None
+
+        # FMP stores the SEC EDGAR document URL in the "source" field.
+        filing_url = str(record.get("source", ""))
+
+        # Parse fiscal period end from the URL path (e.g. "pypl-20251231.htm" → "2025-12-31").
+        _m = re.search(r"(\d{4})(\d{2})(\d{2})\.htm", filing_url)
+        filing_period_end: Optional[str] = (
+            f"{_m.group(1)}-{_m.group(2)}-{_m.group(3)}" if _m else None
+        )
+
+        return {
+            "shares":            shares,
+            "source":            "FMP/shares-float (SEC EDGAR)",
+            "filing_url":        filing_url,
+            "filing_period_end": filing_period_end,
+            # FMP's "date" is their data-refresh timestamp, not the SEC filing date.
+            "data_refreshed_at": str(record.get("date", "")),
+            "fetched_at":        datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
     def fetch_screener(
         self,
         sector: str = "",
@@ -701,6 +758,12 @@ class FMPClient:
         quote = self.fetch_quote(symbol)
         sd.current_price = safe_float(quote.get("price"))
         sd.market_cap = safe_float(quote.get("marketCap"))
+        _ts = quote.get("timestamp")
+        if _ts:
+            try:
+                sd.quote_date = datetime.datetime.utcfromtimestamp(int(_ts)).strftime("%Y-%m-%d")
+            except Exception:
+                pass
         sd.income_statements = self.fetch_income_statements(symbol, limit)
         sd.quarterly_income = self.fetch_income_statements(symbol, 4, "quarter")
         sd.balance_sheets = self.fetch_balance_sheets(symbol, limit)

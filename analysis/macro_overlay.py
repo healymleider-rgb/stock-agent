@@ -88,12 +88,22 @@ _EXPANSION_MIN   = 65
 _SLOWDOWN_MIN    = 50
 _CONTRACTION_MIN = 35
 
-# Sector tilt by regime
+# Sector tilt by regime (fallback when cycle_phase is unknown)
 _SECTOR_TILTS = {
     "Expansion":   "Cyclicals, Industrials, Financials",
     "Slowdown":    "Defensives, Healthcare, Consumer Staples",
     "Contraction": "Treasuries, Utilities, Gold proxies",
     "Recovery":    "Small-caps, Cyclicals, Real Estate",
+}
+
+# Phase-specific sector tilts (more granular; keyed by (regime, cycle_phase))
+_PHASE_SECTOR_TILTS: dict[tuple[str, str], str] = {
+    ("Recovery",    "early"):       "Small-caps, Cyclicals, Real Estate",
+    ("Expansion",   "mid"):         "Cyclicals, Industrials, Financials",
+    ("Expansion",   "late"):        "Quality equities, Dividend payers; reduce high-beta",
+    ("Slowdown",    "early"):       "Selective cyclicals, Quality Growth",
+    ("Slowdown",    "late"):        "Defensives, Healthcare, Consumer Staples",
+    ("Contraction", "contraction"): "Treasuries, Utilities, Gold proxies",
 }
 
 
@@ -105,11 +115,17 @@ class MacroAssessment:
     macro_regime:        str                     # Expansion / Slowdown / Contraction / Recovery
     recession_risk_level: str                    # Low / Moderate / Elevated / High
     confidence_modifier: float                   # −0.10 to +0.05; applied to overall eval confidence
-    sector_tilt:         str                     # sector preference given current regime
+    sector_tilt:         str                     # sector preference given current regime + phase
     reasoning_summary:   str
     bullish_macro_factors: list[str] = field(default_factory=list)
     bearish_macro_factors: list[str] = field(default_factory=list)
     data_coverage:       float = 1.0             # fraction of indicators that had real data
+    # Phase 1 LEI additions
+    cycle_phase:         str = "unknown"         # early / mid / late / contraction / unknown
+    lei_trend:           Optional[str] = None    # rising / falling / inflecting / None
+    yield_spread_trend:  Optional[str] = None    # rising / falling / inflecting / None
+    # Confidence rationale — human-readable explanation of confidence_modifier
+    confidence_adjustment_rationale: str = ""
 
 
 # ── Scoring helpers ────────────────────────────────────────────────────────────
@@ -117,7 +133,7 @@ class MacroAssessment:
 def _score_yield_spread(spread: Optional[float]) -> tuple[float, list[str], list[str]]:
     """Return (sub_score 0–100, bullish_factors, bearish_factors)."""
     if spread is None:
-        return 50.0, [], ["Yield curve data unavailable — defaulting to neutral"]
+        return 50.0, [], ["Yield curve data not yet available — signal inconclusive"]
 
     bullish, bearish = [], []
 
@@ -142,7 +158,7 @@ def _score_yield_spread(spread: Optional[float]) -> tuple[float, list[str], list
 
 def _score_jobless_claims(claims: Optional[float]) -> tuple[float, list[str], list[str]]:
     if claims is None:
-        return 50.0, [], ["Initial jobless claims data unavailable — defaulting to neutral"]
+        return 50.0, [], ["Jobless claims data not yet available — signal inconclusive"]
 
     bullish, bearish = [], []
     c = claims
@@ -168,7 +184,7 @@ def _score_jobless_claims(claims: Optional[float]) -> tuple[float, list[str], li
 
 def _score_housing_starts(starts: Optional[float]) -> tuple[float, list[str], list[str]]:
     if starts is None:
-        return 50.0, [], ["Housing starts data unavailable — defaulting to neutral"]
+        return 50.0, [], ["Housing starts data not yet available — signal inconclusive"]
 
     bullish, bearish = [], []
     s = starts
@@ -219,8 +235,13 @@ def _score_activity_proxy(mfg_emp: Optional[float]) -> tuple[float, list[str], l
     return sub, bullish, bearish
 
 
-def _score_composite_lei(cli: Optional[float], lei: Optional[float]) -> tuple[float, list[str], list[str]]:
-    """Use OECD CLI if available; fall back to CB LEI heuristic if not."""
+def _score_composite_lei(cli: Optional[float], lei: Optional[float]) -> tuple[Optional[float], list[str], list[str]]:
+    """Use OECD CLI if available; fall back to CB LEI heuristic if not.
+
+    Returns (None, [], [note]) when no CLI/LEI data is present so the caller
+    can exclude this indicator from the weighted average entirely, rather than
+    silently biasing the score toward neutral.
+    """
     # Prefer CLI (normalized around 100)
     value = cli  # may be None
     source = "OECD CLI"
@@ -231,7 +252,7 @@ def _score_composite_lei(cli: Optional[float], lei: Optional[float]) -> tuple[fl
         source = "Conference Board LEI"
 
     if value is None:
-        return 50.0, [], ["Composite leading index unavailable — defaulting to neutral"]
+        return None, [], ["Composite leading index: OECD CLI data too stale to use. Excluded from regime calculation."]
 
     bullish, bearish = [], []
 
@@ -298,6 +319,53 @@ def _classify_regime(
     return "Contraction"
 
 
+def _classify_cycle_phase(
+    regime: str,
+    cli_trend: Optional[str],
+    yield_spread: Optional[float],
+    yield_spread_trend: Optional[str],
+) -> str:
+    """
+    Map regime + trend direction to a coarse cycle phase.
+
+    Returns one of: "early" | "mid" | "late" | "contraction" | "unknown"
+
+    Rules are intentionally coarse and transparent.  Each branch is labelled
+    with the condition that triggers it so future tuning is legible.
+
+    Recovery  → always "early"   (by definition: trough has passed)
+    Slowdown  → usually "late";  "early" only if CLI is inflecting up AND
+                                  yield spread is recovering (a turning point)
+    Expansion → "mid" by default;
+                "late" when yield spread is below 0.25pp OR CLI is falling
+                  (spread compression and fading CLI are classic late-cycle tells)
+    Contraction → "contraction"  (separate from phase language)
+    """
+    if regime == "Contraction":
+        return "contraction"
+
+    if regime == "Recovery":
+        return "early"
+
+    if regime == "Expansion":
+        # Late-cycle signals: spread tight/flat, OR CLI momentum is fading
+        spread_tight  = yield_spread is not None and yield_spread < 0.25
+        cli_fading    = cli_trend == "falling"
+        if spread_tight or cli_fading:
+            return "late"
+        return "mid"
+
+    if regime == "Slowdown":
+        # Turning-point signal: CLI inflecting up + spread recovering → early
+        cli_turning    = cli_trend == "inflecting"
+        spread_turning = yield_spread_trend == "rising"
+        if cli_turning and spread_turning:
+            return "early"
+        return "late"
+
+    return "unknown"
+
+
 def _recession_risk(score: float) -> str:
     if score >= _EXPANSION_MIN:
         return "Low"
@@ -341,7 +409,8 @@ def score(snapshot: dict) -> MacroAssessment:
 
     Expected snapshot keys (all optional — missing → None):
       yield_spread_10y2y, housing_starts, jobless_claims,
-      lei_composite, oecd_cli, mfg_employment
+      lei_composite, oecd_cli, mfg_employment,
+      oecd_cli_trend, yield_spread_trend          ← Phase 1 additions
     """
     spread    = snapshot.get("yield_spread_10y2y")
     starts    = snapshot.get("housing_starts")
@@ -349,6 +418,9 @@ def score(snapshot: dict) -> MacroAssessment:
     lei       = snapshot.get("lei_composite")
     cli       = snapshot.get("oecd_cli")
     mfg       = snapshot.get("mfg_employment")
+    # Phase 1 trend fields — None when FRED unavailable or window too short
+    cli_trend    = snapshot.get("oecd_cli_trend")
+    spread_trend = snapshot.get("yield_spread_trend")
 
     print(
         f"  [MACRO] raw inputs:"
@@ -368,19 +440,31 @@ def score(snapshot: dict) -> MacroAssessment:
     s_activity,b_activity,bad_activity= _score_activity_proxy(mfg)
     s_cli,     b_cli,     bad_cli     = _score_composite_lei(cli, lei)
 
+    _cli_str = f"{s_cli:.0f}" if s_cli is not None else "excluded"
     print(
         f"  [MACRO] scores: yield={s_yield:.0f} claims={s_claims:.0f}"
-        f" starts={s_starts:.0f} activity={s_activity:.0f} cli={s_cli:.0f}"
+        f" starts={s_starts:.0f} activity={s_activity:.0f} cli={_cli_str}"
     )
 
-    # Weighted macro score
-    macro_score = (
-        s_yield    * _WEIGHTS["yield_spread"]
-        + s_claims * _WEIGHTS["jobless_claims"]
-        + s_starts * _WEIGHTS["housing_starts"]
-        + s_activity * _WEIGHTS["activity_proxy"]
-        + s_cli    * _WEIGHTS["composite_lei"]
-    )
+    # Weighted macro score — exclude CLI weight when CLI/LEI data is unavailable
+    # and redistribute its weight proportionally to the remaining four indicators.
+    if s_cli is None:
+        _cli_w    = _WEIGHTS["composite_lei"]
+        _avail_w  = 1.0 - _cli_w   # = 0.90
+        macro_score = (
+            s_yield    * (_WEIGHTS["yield_spread"]    / _avail_w)
+            + s_claims * (_WEIGHTS["jobless_claims"]  / _avail_w)
+            + s_starts * (_WEIGHTS["housing_starts"]  / _avail_w)
+            + s_activity * (_WEIGHTS["activity_proxy"] / _avail_w)
+        )
+    else:
+        macro_score = (
+            s_yield    * _WEIGHTS["yield_spread"]
+            + s_claims * _WEIGHTS["jobless_claims"]
+            + s_starts * _WEIGHTS["housing_starts"]
+            + s_activity * _WEIGHTS["activity_proxy"]
+            + s_cli    * _WEIGHTS["composite_lei"]
+        )
     print(
         f"  [MACRO] weighted macro_score={macro_score:.1f}/100"
         f" data_coverage={data_coverage:.0%}"
@@ -390,13 +474,37 @@ def score(snapshot: dict) -> MacroAssessment:
     bullish = b_yield + b_claims + b_starts + b_activity + b_cli
     bearish = bad_yield + bad_claims + bad_starts + bad_activity + bad_cli
 
-    regime  = _classify_regime(macro_score, spread, claims)
-    risk    = _recession_risk(macro_score)
-    conf_mod = _confidence_modifier(macro_score, data_coverage)
-    tilt    = _SECTOR_TILTS[regime]
+    regime      = _classify_regime(macro_score, spread, claims)
+    cycle_phase = _classify_cycle_phase(regime, cli_trend, spread, spread_trend)
+    risk        = _recession_risk(macro_score)
+    conf_mod    = _confidence_modifier(macro_score, data_coverage)
+    # Phase-specific sector tilt — falls back to regime-level tilt when phase is unknown
+    tilt        = _PHASE_SECTOR_TILTS.get((regime, cycle_phase), _SECTOR_TILTS.get(regime, "No tilt"))
+
+    print(
+        f"  [MACRO] cycle_phase={cycle_phase}"
+        f"  lei_trend={cli_trend or 'N/A'}"
+        f"  spread_trend={spread_trend or 'N/A'}"
+    )
+
+    # Confidence rationale
+    if data_coverage < 0.4:
+        conf_rationale = "Low data coverage — confidence degraded"
+    elif macro_score >= 70:
+        conf_rationale = f"Strong macro score ({macro_score:.0f}/100) → positive confidence modifier"
+    elif macro_score >= 55:
+        conf_rationale = f"Solid macro score ({macro_score:.0f}/100) → mild positive modifier"
+    elif macro_score >= 40:
+        conf_rationale = f"Below-average macro score ({macro_score:.0f}/100) → mild negative modifier"
+    elif macro_score >= 25:
+        conf_rationale = f"Weak macro score ({macro_score:.0f}/100) → significant negative modifier"
+    else:
+        conf_rationale = f"Very weak macro score ({macro_score:.0f}/100) → maximum negative modifier"
+    if data_coverage < 1.0 and data_coverage >= 0.4:
+        conf_rationale += f"; coverage penalty ({data_coverage:.0%} indicators available)"
 
     # Reasoning summary
-    reason_parts = [f"Macro score {macro_score:.0f}/100 → {regime} regime."]
+    reason_parts = [f"Macro score {macro_score:.0f}/100 → {regime} ({cycle_phase})."]
     if bearish:
         reason_parts.append(f"Key concerns: {bearish[0].split(' —')[0]}.")
     if bullish:
@@ -414,4 +522,8 @@ def score(snapshot: dict) -> MacroAssessment:
         bullish_macro_factors=bullish,
         bearish_macro_factors=bearish,
         data_coverage=round(data_coverage, 2),
+        cycle_phase=cycle_phase,
+        lei_trend=cli_trend,
+        yield_spread_trend=spread_trend,
+        confidence_adjustment_rationale=conf_rationale,
     )

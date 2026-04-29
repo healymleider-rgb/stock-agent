@@ -42,9 +42,15 @@ class ProfileResult:
     profile: Optional[CompanyProfile] = None
     current_price: Optional[float] = None
     market_cap: Optional[float] = None
-    shares_outstanding: Optional[float] = None   # raw shares from /quote
+    shares_outstanding: Optional[float] = None   # raw shares from /quote or /shares-float
     market_cap_computed: Optional[float] = None  # price × shares cross-check
     quote: dict[str, Any] = field(default_factory=dict)
+    # Provenance for shares_outstanding — populated when /shares-float (SEC EDGAR) is used
+    shares_source: str = ""                            # e.g. "FMP/shares-float (SEC EDGAR)"
+    shares_filing_period_end: Optional[str] = None    # fiscal period end, e.g. "2025-12-31"
+    shares_filing_date: Optional[str] = None          # real SEC filing date — set later from income_statements
+    shares_filing_url: Optional[str] = None           # direct SEC EDGAR document URL
+    shares_data_refreshed_at: Optional[str] = None    # when FMP last refreshed the float record
 
     def is_empty(self) -> bool:
         return self.profile is None

@@ -49,3 +49,6 @@ frontend/out/
 # ── Stray frontend files in utils/ ────────────────────────────────────────────
 utils/app/
 utils/utils.ts
+
+# Claude Code local skills (developer tooling, not project code)
+.claude/

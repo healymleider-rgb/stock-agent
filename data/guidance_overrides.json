@@ -1,0 +1,10 @@
+{
+  "_comment": "Management guidance overrides for FCF and revenue. Keys are tickers (uppercase). Each entry must include 'date' (YYYY-MM-DD of the guidance publication), 'fcf' (full-year FCF in absolute dollars, or null), 'revenue' (full-year revenue guidance, or null), and 'source' (description of the earnings release or press release).",
+
+  "NFLX": {
+    "date":    "2026-04-18",
+    "fcf":     12500000000,
+    "revenue": null,
+    "source":  "Q1 2026 shareholder letter — full-year 2026 FCF guidance raised to ~$12.5B"
+  }
+}

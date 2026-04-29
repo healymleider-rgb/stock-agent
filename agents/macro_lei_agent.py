@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from analysis.macro_overlay import score as overlay_score
 from agents.base_agent import BaseAgent
-from api.fred_provider import FREDProvider
+from api.fred_provider import FREDProvider, StaleMacroError
 from models.message import AgentMessage, MessageType
 from utils.logger import logger
 
@@ -57,9 +57,29 @@ class MacroLEIAgent(BaseAgent):
             )
             return self._neutral_response(message)
 
-        # Fetch all tracked indicators in one round-trip bundle
+        # Fetch all tracked indicators in one round-trip bundle.
+        # StaleMacroError is raised when the OECD CLI observation is older than
+        # the staleness threshold (45 days).  The exception carries the full
+        # snapshot in exc.snapshot so we can null out just the stale indicator
+        # and continue with a degraded (CLI=None) overlay rather than failing.
         print(f"  [MacroLEI] Fetching LEI snapshot from FRED ...")
-        snapshot = self._fred.get_lei_snapshot()
+        _stale_cli_warning: str = ""
+        try:
+            snapshot = self._fred.get_lei_snapshot()
+        except StaleMacroError as _e:
+            _stale_cli_warning = str(_e)
+            logger.warning("MacroLEIAgent: stale OECD CLI — %s", _stale_cli_warning)
+            print(
+                "  [MacroLEI] *** STALE CLI — excluding oecd_cli from scoring, "
+                "continuing with degraded macro overlay ***"
+            )
+            snapshot = _e.snapshot                # full snapshot attached by FREDProvider
+            snapshot["oecd_cli"]        = None    # strip the stale value
+            snapshot["oecd_cli_trend"]  = None    # trend is also unreliable
+            # Patch observation_dates so display shows the staleness note
+            _od = snapshot.get("_observation_dates", {})
+            _od["oecd_cli"] = f"STALE ({_stale_cli_warning[:80]}...)"
+            snapshot["_observation_dates"] = _od
 
         # Extract observation dates (injected by FREDProvider.get_lei_snapshot)
         obs_dates: dict = snapshot.pop("_observation_dates", {})
@@ -80,6 +100,7 @@ class MacroLEIAgent(BaseAgent):
 
         print(
             f"  [MacroLEI] Regime={assessment.macro_regime}  "
+            f"CyclePhase={assessment.cycle_phase}  "
             f"Score={assessment.macro_score:.0f}/100  "
             f"RecessionRisk={assessment.recession_risk_level}  "
             f"ConfMod={assessment.confidence_modifier:+.3f}"
@@ -95,6 +116,15 @@ class MacroLEIAgent(BaseAgent):
             "bullish_macro_factors":  assessment.bullish_macro_factors,
             "bearish_macro_factors":  assessment.bearish_macro_factors,
             "data_coverage":          assessment.data_coverage,
+            # Phase 1 LEI additions
+            "cycle_phase":            assessment.cycle_phase,
+            "lei_trend":              assessment.lei_trend,
+            "yield_spread_trend":     assessment.yield_spread_trend,
+            # Traceability
+            "confidence_adjustment_rationale": assessment.confidence_adjustment_rationale,
+            # Actual level values for display (not just trend direction)
+            "cli_level":              snapshot.get("oecd_cli"),
+            "yield_curve_level":      snapshot.get("yield_spread_10y2y"),
             "snapshot":               snapshot,
             "observation_dates":      obs_dates,
         }
@@ -117,10 +147,10 @@ class MacroLEIAgent(BaseAgent):
             "macro_regime":           "Unknown",
             "recession_risk_level":   "Unknown",
             "confidence_modifier":    0.0,
-            "sector_tilt":            "No tilt — macro data unavailable",
-            "reasoning_summary":      "FRED API key not configured; macro analysis unavailable.",
+            "sector_tilt":            "",
+            "reasoning_summary":      "Macro overlay not available — macro signals are inconclusive.",
             "bullish_macro_factors":  [],
-            "bearish_macro_factors":  ["FRED_API_KEY not set — macro indicators not evaluated"],
+            "bearish_macro_factors":  [],
             "data_coverage":          0.0,
             "snapshot":               {},
         }

@@ -857,11 +857,29 @@ export default function ReportPage() {
               {/* Right: key stats */}
               <div className="lg:w-80 shrink-0">
                 <div className="grid grid-cols-2 gap-3">
-                  <StatCell label="Price" value={formatPrice(stock_info.current_price)} large />
-                  <StatCell label="Market Cap" value={formatLargeNumber(stock_info.market_cap)} large />
-                  <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)} />
-                  <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} />
-                  <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} />
+                  <StatCell label="Price" value={formatPrice(stock_info.current_price)} large
+                    note={stock_info._sources?.price ?? undefined}
+                  />
+                  <StatCell label="Market Cap" value={formatLargeNumber(stock_info.market_cap)} large
+                    note={stock_info._sources?.market_cap ?? undefined}
+                  />
+                  <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)}
+                    note={stock_info._sources?.pe_ratio ?? undefined}
+                  />
+                  <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)}
+                    note={stock_info._sources?.ps_ratio ?? undefined}
+                  />
+                  <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)}
+                    note={stock_info._sources?.ev_ebitda ?? undefined}
+                  />
+                  {stock_info.shares_outstanding != null && (
+                    <StatCell
+                      label="Shares Out."
+                      value={`${(stock_info.shares_outstanding / 1e6).toFixed(1)}M`}
+                      note={stock_info.shares_source ?? undefined}
+                      noteHref={stock_info.shares_filing_url ?? undefined}
+                    />
+                  )}
                   <StatCell label="Beta" value={safeFixed(stock_info.beta, 2)} />
                   <StatCell label="Gross Margin" value={formatRatio(stock_info.gross_margin)} />
                   <StatCell label="Net Margin" value={formatRatio(stock_info.net_margin)} />
@@ -1030,9 +1048,15 @@ export default function ReportPage() {
                 </CardHeader>
                 <CardContent className="px-6 pb-5">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-                    <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)} large />
-                    <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} large />
-                    <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large />
+                    <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)} large
+                      note={stock_info._sources?.pe_ratio ?? undefined}
+                    />
+                    <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} large
+                      note={stock_info._sources?.ps_ratio ?? undefined}
+                    />
+                    <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large
+                      note={stock_info._sources?.ev_ebitda ?? undefined}
+                    />
                     <StatCell
                       label="PEG"
                       value={formatMultiple(valuation_range?.peg_ratio)}
@@ -1475,11 +1499,21 @@ export default function ReportPage() {
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4 mb-5">
-              <StatCell label="Price" value={formatPrice(stock_info.current_price)} large />
-              <StatCell label="Market Cap" value={formatLargeNumber(stock_info.market_cap)} large />
-              <StatCell label="P/E" value={formatMultiple(stock_info.pe_ratio)} large />
-              <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} large />
-              <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large />
+              <StatCell label="Price" value={formatPrice(stock_info.current_price)} large
+                note={stock_info._sources?.price ?? undefined}
+              />
+              <StatCell label="Market Cap" value={formatLargeNumber(stock_info.market_cap)} large
+                note={stock_info._sources?.market_cap ?? undefined}
+              />
+              <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)} large
+                note={stock_info._sources?.pe_ratio ?? undefined}
+              />
+              <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} large
+                note={stock_info._sources?.ps_ratio ?? undefined}
+              />
+              <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large
+                note={stock_info._sources?.ev_ebitda ?? undefined}
+              />
               <StatCell label="Beta" value={safeFixed(stock_info.beta, 2)} large />
             </div>
             <div className="space-y-2 border-t border-slate-100 pt-4">
@@ -1589,9 +1623,15 @@ export default function ReportPage() {
                 </CardHeader>
                 <CardContent className="px-6 pb-5">
                   <div className="grid grid-cols-4 gap-4 mb-4">
-                    <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)} large />
-                    <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} large />
-                    <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large />
+                    <StatCell label={stock_info._sources?.pe_ratio?.includes('ttm') ? 'P/E (TTM)' : 'P/E'} value={formatMultiple(stock_info.pe_ratio)} large
+                      note={stock_info._sources?.pe_ratio ?? undefined}
+                    />
+                    <StatCell label="P/S" value={formatMultiple(stock_info.ps_ratio)} large
+                      note={stock_info._sources?.ps_ratio ?? undefined}
+                    />
+                    <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large
+                      note={stock_info._sources?.ev_ebitda ?? undefined}
+                    />
                     <StatCell label="PEG" value={formatMultiple(valuation_range?.peg_ratio)} large />
                   </div>
                   {valuation_range?.peg_interpretation && (
@@ -2081,10 +2121,14 @@ function StatCell({
   label,
   value,
   large,
+  note,
+  noteHref,
 }: {
   label: string;
   value: string;
   large?: boolean;
+  note?: string;
+  noteHref?: string;
 }) {
   return (
     <div className="space-y-0.5">
@@ -2097,6 +2141,20 @@ function StatCell({
       >
         {value}
       </p>
+      {note && (
+        noteHref ? (
+          <a
+            href={noteHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-slate-400 hover:text-slate-600 underline decoration-dotted"
+          >
+            {note}
+          </a>
+        ) : (
+          <p className="text-xs text-slate-400">{note}</p>
+        )
+      )}
     </div>
   );
 }

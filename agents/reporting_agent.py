@@ -269,16 +269,46 @@ class ReportingAgent(BaseAgent):
 
         _conf_label = self._confidence_label(sc.confidence)
 
-        # Company info + key metrics
-        lines += [
+        # Company info + key metrics — provenance sourced from NormalizedMetrics
+        def _src(label: str) -> str:
+            return f"  [{label}]" if label else ""
+
+        _nm = norm_metrics  # alias for brevity
+        _mktcap_src  = _src(_nm.market_cap_source)  if _nm else ""
+        _price_src   = _src("FMP")                   # price always from FMP in live runs
+        _pe_src      = _src(_nm.pe_source)           if _nm else ""
+        _ps_src      = _src(_nm.ps_source)           if _nm else ""
+        _ev_src      = _src(_nm.ev_ebitda_source)    if _nm else ""
+
+        _shares_line = ""
+        if _nm and _nm.shares is not None:
+            _sh_fmt = f"{_nm.shares / 1e6:.1f}M"
+            _sh_src = f"  [{_nm.shares_source}]" if _nm.shares_source else ""
+            _sh_url = f"  {_nm.shares_filing_url}" if getattr(_nm, "shares_filing_url", None) else ""
+            _shares_line = f"  Shares Out.   : {_sh_fmt}{_sh_src}{_sh_url}"
+
+        _price_line = (
+            f"  Current Price : ${price:.2f}{_price_src}" if price
+            else "  Current Price : N/A"
+        )
+
+        _header_metrics = [
             f"  Company       : {company}",
             f"  Sector        : {sector}  |  Industry: {industry}",
-            f"  Market Cap    : {mktcap}",
-            f"  Current Price : ${price:.2f}" if price else "  Current Price : N/A",
-            f"  P/E Ratio     : {pe_str}",
-            f"  P/S Ratio     : {ps_str}",
-            f"  EV/EBITDA     : {ev_str}",
+            f"  Market Cap    : {mktcap}{_mktcap_src}",
+            _price_line,
+        ]
+        if _shares_line:
+            _header_metrics.append(_shares_line)
+        _header_metrics += [
+            f"  P/E Ratio     : {pe_str}{_pe_src}",
+            f"  P/S Ratio     : {ps_str}{_ps_src}",
+            f"  EV/EBITDA     : {ev_str}{_ev_src}",
             "",
+        ]
+
+        lines += _header_metrics
+        lines += [
             "─" * 68,
             f"  Overall Score : {sc.overall_score:.0f} / 100",
             f"  Stance        : {sc.stance.value.upper()}",
@@ -492,7 +522,10 @@ class ReportingAgent(BaseAgent):
         lines.append("  Valuation View")
         lines.append("  --------------")
         _peg_display = f"{val_range.peg_ratio:.2f}x" if (val_range and val_range.peg_ratio is not None) else "N/A"
-        lines.append(f"  P/E: {pe_str}  |  P/S: {ps_str}  |  EV/EBITDA: {ev_str}  |  PEG: {_peg_display}")
+        _vv_pe  = f"{pe_str}{_pe_src}"
+        _vv_ps  = f"{ps_str}{_ps_src}"
+        _vv_ev  = f"{ev_str}{_ev_src}"
+        lines.append(f"  P/E: {_vv_pe}  |  P/S: {_vv_ps}  |  EV/EBITDA: {_vv_ev}  |  PEG: {_peg_display}")
         if val_range and val_range.peg_ratio is not None and val_range.peg_interpretation:
             lines.append(f"  {val_range.peg_interpretation}")
         if sc.valuation and sc.valuation.data_quality != "missing":
@@ -2007,8 +2040,8 @@ class ReportingAgent(BaseAgent):
         # Falls back to the rating×setup table when MC is absent (unprofitable
         # tickers that skip the driver model) or the rating is Hold/Sell.
 
-        _BUY_FLOOR   = 1.5   # Buy/Strong Buy never below 1.5% (= Starter Buy)
-        _HOLD_FLOOR  = 0.5   # Hold never below 0.5%
+        _BUY_FLOOR   = 0.0   # No artificial floor — let sizing math be honest
+        _HOLD_FLOOR  = 0.0   # No artificial floor — Hold can size to 0%
 
         _size_table: dict[tuple[str, str], float] = {
             ("Strong Buy", "strong"):  5.0,

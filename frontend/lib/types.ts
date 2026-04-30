@@ -290,6 +290,11 @@ export interface StockInfo {
   // Data dates — for transparency / staleness display
   price_date: string | null;         // ISO YYYY-MM-DD when quote price was sampled
   fundamentals_date: string | null;  // most recent financial statement filing date
+  // Shares provenance — from SEC EDGAR via NormalizedMetrics
+  shares_outstanding: number | null;
+  shares_source: string | null;
+  shares_filing_date: string | null;
+  shares_filing_url: string | null;
   // Metric provenance — used to show basis labels (e.g. "P/E (TTM)")
   _sources?: {
     price?: string;

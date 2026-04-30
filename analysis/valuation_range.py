@@ -114,6 +114,8 @@ class ValuationRange:
     peg_ratio:          Optional[float] = None
     eps_growth_rate:    Optional[float] = None   # annualised %, e.g. 12.5 = 12.5 %
     peg_interpretation: str = ""
+    peg_method:         str = ""    # "eps_cagr" | "revenue_cagr" | "not_meaningful"
+    peg_note:           str = ""    # populated when method != eps_cagr
 
     # One-line upside/downside summary
     upside_context: str = ""
@@ -1339,9 +1341,18 @@ def compute_valuation_range(
     if metrics is not None and metrics.eps_growth_pct is not None:
         vr.eps_growth_rate = metrics.eps_growth_pct
         vr.peg_ratio       = metrics.peg
+        vr.peg_method      = metrics.peg_method
+        vr.peg_note        = metrics.peg_note
         if metrics.peg is not None:
-            _g = metrics.eps_growth_pct
-            vr.peg_interpretation = _peg_interpretation(metrics.peg, _g)
+            # Use denominator that matches the actual method
+            _g = (
+                metrics.eps_growth_pct
+                if metrics.peg_method != "revenue_cagr"
+                else (metrics.pe_ratio / metrics.peg if metrics.pe_ratio and metrics.peg else metrics.eps_growth_pct)
+            )
+            vr.peg_interpretation = _peg_interpretation(metrics.peg, _g or metrics.eps_growth_pct)
+        elif metrics.peg_method == "not_meaningful":
+            vr.peg_interpretation = metrics.peg_note or "PEG not meaningful for this ticker"
         else:
             vr.peg_interpretation = "PEG not computable"
     else:

@@ -124,6 +124,8 @@ class NormalizedMetrics:
     # ── EPS growth & PEG (one definition everywhere) ─────────────────────────
     eps_growth_pct: Optional[float] = None   # annualized %, e.g. 12.5 means 12.5%
     peg:            Optional[float] = None
+    peg_method:     str = ""    # "eps_cagr" | "revenue_cagr" | "not_meaningful"
+    peg_note:       str = ""    # set when method != eps_cagr
 
     # ── Provider-only ratios (no computed alternative) ────────────────────────
     roe:              Optional[float] = None
@@ -595,6 +597,10 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
     # Annualized CAGR over min(3, n-1) annual periods.
     # Uses TTM EPS as the "current" endpoint when available.
     stmts = stock_data.income_statements
+    _eps_cv          = 0.0
+    _has_negative_eps = False
+    _eps_series_full: list[float] = []   # kept for volatility check in step 11
+
     if len(stmts) >= 2:
         eps_series: list[float] = []
         for stmt in stmts:
@@ -603,6 +609,7 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
                 e = stmt.net_income / m.shares
             if e is not None:
                 eps_series.append(e)
+        _eps_series_full = eps_series
 
         if len(eps_series) >= 2:
             n = min(len(eps_series) - 1, 3)
@@ -633,14 +640,97 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
     else:
         _log(f"EPS_GROWTH: {len(stmts)} income statements — need ≥2")
 
+    # EPS volatility stats (used by step 11 to decide PEG reliability)
+    _all_eps = (
+        ([m.ttm_eps] if m.ttm_eps is not None else []) + _eps_series_full
+    )[:6]
+    _has_negative_eps = any(e < 0 for e in _all_eps)
+    if len(_all_eps) >= 3:
+        import statistics as _stats
+        _eps_mean = _stats.mean(_all_eps)
+        _eps_cv   = (_stats.stdev(_all_eps) / abs(_eps_mean)) if _eps_mean != 0 else float("inf")
+    _log(
+        f"EPS_VOLATILITY: cv={_eps_cv:.2f}"
+        f" has_negative={_has_negative_eps}"
+        f" n={len(_all_eps)}"
+    )
+
+    # Revenue CAGR (for PEG fallback when EPS is unreliable)
+    _rev_cagr_pct: Optional[float] = None
+    _rev_series = [stmt.revenue for stmt in stmts[:5] if getattr(stmt, "revenue", None) and stmt.revenue > 0]
+    if len(_rev_series) >= 2:
+        _n_rev   = min(len(_rev_series) - 1, 3)
+        _r_cagr  = (_rev_series[0] / _rev_series[_n_rev]) ** (1.0 / _n_rev) - 1.0
+        _rev_cagr_pct = round(_r_cagr * 100, 1)
+        _log(f"REV_CAGR: {_rev_cagr_pct:.1f}% ({_n_rev}y, ${_rev_series[_n_rev]:,.0f} → ${_rev_series[0]:,.0f})")
+
     # ── 11. PEG ───────────────────────────────────────────────────────────────
+    # Volatility guard: use revenue CAGR when EPS history is unreliable.
+    # Conditions: CV > 0.5, any negative EPS, EPS CAGR > 50%, or
+    # EPS/revenue CAGR divergence > 20 pp.
+    _eps_cagr_ok = True
+    _unreliable_reasons: list[str] = []
+
+    if _eps_cv > 0.5:
+        _eps_cagr_ok = False
+        _unreliable_reasons.append(f"CV={_eps_cv:.2f}")
+    if _has_negative_eps:
+        _eps_cagr_ok = False
+        _unreliable_reasons.append("negative EPS in history")
+    if m.eps_growth_pct is not None and m.eps_growth_pct > 50:
+        _eps_cagr_ok = False
+        _unreliable_reasons.append(f"EPS CAGR {m.eps_growth_pct:.0f}% likely volatile-base")
+    if (
+        m.eps_growth_pct is not None and _rev_cagr_pct is not None
+        and abs(m.eps_growth_pct - _rev_cagr_pct) > 20
+    ):
+        _eps_cagr_ok = False
+        _unreliable_reasons.append(
+            f"EPS/rev CAGR diverge {abs(m.eps_growth_pct - _rev_cagr_pct):.0f}pp"
+        )
+
     if m.pe_ratio and m.eps_growth_pct and m.eps_growth_pct > 0:
-        raw_peg = m.pe_ratio / m.eps_growth_pct
-        if 0 < raw_peg <= _PEG_CAP:
-            m.peg = round(raw_peg, 2)
-            _log(f"PEG: {m.pe_ratio:.2f} / {m.eps_growth_pct:.1f}% = {m.peg:.2f}")
+        _eps_raw_peg = m.pe_ratio / m.eps_growth_pct
+
+        if _eps_cagr_ok:
+            # Standard EPS-based PEG
+            if 0 < _eps_raw_peg <= _PEG_CAP:
+                m.peg        = round(_eps_raw_peg, 2)
+                m.peg_method = "eps_cagr"
+                _log(f"PEG: {m.pe_ratio:.2f} / {m.eps_growth_pct:.1f}% = {m.peg:.2f} (eps_cagr)")
+            else:
+                _log(f"PEG: raw={_eps_raw_peg:.2f} outside valid range → skipped")
         else:
-            _log(f"PEG: raw={raw_peg:.2f} outside valid range → skipped")
+            # EPS CAGR unreliable — fall back to revenue CAGR
+            _reason_str = "; ".join(_unreliable_reasons)
+            if _rev_cagr_pct is not None and _rev_cagr_pct >= 5.0:
+                _rev_raw_peg = m.pe_ratio / _rev_cagr_pct
+                if 0 < _rev_raw_peg <= _PEG_CAP:
+                    m.peg        = round(_rev_raw_peg, 2)
+                    m.peg_method = "revenue_cagr"
+                    m.peg_note   = (
+                        f"EPS-based PEG ({round(_eps_raw_peg, 2):.2f}) unreliable "
+                        f"({_reason_str}). Using revenue CAGR ({_rev_cagr_pct:.0f}%) "
+                        f"instead. EPS-based PEG shown for reference only."
+                    )
+                    _log(
+                        f"PEG: {m.pe_ratio:.2f} / {_rev_cagr_pct:.1f}% = {m.peg:.2f}"
+                        f" (revenue_cagr; eps_peg={round(_eps_raw_peg,2):.2f} suppressed)"
+                    )
+                else:
+                    m.peg        = None
+                    m.peg_method = "not_meaningful"
+                    m.peg_note   = f"PEG not meaningful ({_reason_str}; revenue CAGR outside range)"
+                    _log(f"PEG: not_meaningful ({_reason_str})")
+            else:
+                m.peg        = None
+                m.peg_method = "not_meaningful"
+                rev_note = (
+                    f"rev CAGR {_rev_cagr_pct:.0f}% too low" if _rev_cagr_pct is not None
+                    else "revenue CAGR unavailable"
+                )
+                m.peg_note   = f"PEG not meaningful for this ticker ({_reason_str}; {rev_note})."
+                _log(f"PEG: not_meaningful ({_reason_str}; {rev_note})")
     elif m.pe_ratio and m.eps_growth_pct is not None and m.eps_growth_pct <= 0:
         _log(f"PEG: EPS growth ≤0 ({m.eps_growth_pct:.1f}%) → PEG not meaningful")
     else:

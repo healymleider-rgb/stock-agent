@@ -521,13 +521,25 @@ class ReportingAgent(BaseAgent):
         # ── Valuation View ─────────────────────────────────────────────────────
         lines.append("  Valuation View")
         lines.append("  --------------")
-        _peg_display = f"{val_range.peg_ratio:.2f}x" if (val_range and val_range.peg_ratio is not None) else "N/A"
+        _peg_method = getattr(val_range, "peg_method", "") if val_range else ""
+        _peg_note   = getattr(val_range, "peg_note",   "") if val_range else ""
+        if val_range and val_range.peg_ratio is not None:
+            if _peg_method == "revenue_cagr":
+                _peg_display = f"{val_range.peg_ratio:.2f}x (rev-CAGR; EPS too volatile)"
+            else:
+                _peg_display = f"{val_range.peg_ratio:.2f}x"
+        elif _peg_method == "not_meaningful":
+            _peg_display = "not meaningful"
+        else:
+            _peg_display = "N/A"
         _vv_pe  = f"{pe_str}{_pe_src}"
         _vv_ps  = f"{ps_str}{_ps_src}"
         _vv_ev  = f"{ev_str}{_ev_src}"
         lines.append(f"  P/E: {_vv_pe}  |  P/S: {_vv_ps}  |  EV/EBITDA: {_vv_ev}  |  PEG: {_peg_display}")
         if val_range and val_range.peg_ratio is not None and val_range.peg_interpretation:
             lines.append(f"  {val_range.peg_interpretation}")
+        if _peg_note:
+            lines.append(f"  ⚠ PEG note: {_peg_note}")
         if sc.valuation and sc.valuation.data_quality != "missing":
             lines.append(f"  {sc.valuation.reasoning}")
             tension_factors = [f for f in sc.valuation.factors if "PEG" in f and "tension" not in f.lower() and len(f) > 40]

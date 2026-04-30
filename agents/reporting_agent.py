@@ -2205,9 +2205,11 @@ class ReportingAgent(BaseAgent):
                 _prev_target = target
                 _ceil = 5.0 if base_rating == "Strong Buy" else 3.0
 
-                # Apply continuous size adjustment (step-ups gated on no prior cap)
+                # Apply continuous size adjustment.
+                # Step-ups require: no prior cap AND a nonzero base (Kelly said
+                # something — don't manufacture a position from nothing).
                 _adj = _profile.size_adjustment
-                if _adj > 0 and not hard_cap_reason:
+                if _adj > 0 and not hard_cap_reason and target > 0:
                     target = min(target + _adj, _ceil)
                 elif _adj < 0:
                     target = max(target + _adj, _floor)

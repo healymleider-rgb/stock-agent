@@ -492,7 +492,8 @@ class ReportingAgent(BaseAgent):
                 )
 
             if _st_lines:
-                lines.append("  Scenario Analysis:")
+                lines.append("  1-Year Operating Scenarios  (supplementary; scenario tree)")
+                lines.append("  ─────────────────────────────────────────────────────────")
                 lines += _st_lines
                 lines.append("")
 
@@ -1515,7 +1516,10 @@ class ReportingAgent(BaseAgent):
             PEG Ratio : 2.00x (25.0x ÷ 12.5%)
             → PEG 2.00 — slightly expensive relative to growth
         """
-        lines: list[str] = ["  Valuation Range", "  ───────────────"]
+        lines: list[str] = [
+            "  Fair Value Range  (primary; driver model)",
+            "  ──────────────────────────────────────────",
+        ]
 
         if vr is None or vr.data_quality == "missing":
             lines.append("    Valuation range not computable — insufficient data.")
@@ -1901,6 +1905,36 @@ class ReportingAgent(BaseAgent):
                     f" — downside scenarios outweigh upside in magnitude"
                 )
             lines.append("")
+
+        # ── Methodology comparison note (Fix G) ───────────────────────────────
+        # Flag when driver-model base diverges materially from the P/E supporting method
+        _drv_base = vr.base_price
+        _pe_base  = vr.pe_base
+        if (
+            _drv_base is not None and _pe_base is not None
+            and _pe_base > 0 and current_price is not None and current_price > 0
+        ):
+            _meth_div = abs(_drv_base - _pe_base) / _pe_base
+            if _meth_div >= 0.30:
+                _dir = "above" if _drv_base > _pe_base else "below"
+                lines.append(
+                    f"    ⚠  Methodology note: driver model base (${_drv_base:.0f}) is"
+                    f" {_meth_div:.0%} {_dir} the P/E-implied base (${_pe_base:.0f})."
+                )
+                lines.append(
+                    "       Driver model uses a DCF-style FCF scenario tree; P/E method applies"
+                    " a multiple to forward EPS.  Large divergence suggests FCF/earnings"
+                    " conversion or growth assumptions differ materially — review both."
+                )
+                lines.append("")
+            elif _meth_div >= 0.25:
+                _dir = "above" if _drv_base > _pe_base else "below"
+                lines.append(
+                    f"    ℹ  Driver model base (${_drv_base:.0f}) is {_meth_div:.0%} {_dir}"
+                    f" P/E-implied base (${_pe_base:.0f}) — earnings-to-FCF conversion"
+                    " may explain the gap."
+                )
+                lines.append("")
 
         # ── PEG ───────────────────────────────────────────────────────────────
         if vr.peg_ratio is not None:

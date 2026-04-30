@@ -307,7 +307,7 @@ class AlphaPipeline:
                 macro_regime   = macro_regime,
                 earnings_trend = _trend,
                 current_pe     = pe_val,
-                base_eps       = getattr(val_range, "scenario_base_eps", None),
+                base_eps       = getattr(val_range, "scenario_bear_eps", None),
                 current_price  = price,
                 factor_profile = factor_profile,
                 hrl_result     = hrl_result,

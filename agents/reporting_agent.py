@@ -242,6 +242,9 @@ class ReportingAgent(BaseAgent):
         analyst_note = market_findings.get("analyst", {}).get("note", "")
         pt_note = market_findings.get("price_target", {}).get("note", "")
         sector_note = market_findings.get("sector", {}).get("note", "")
+        _analyst_consensus_target: "float | None" = (
+            market_findings.get("price_target", {}).get("consensus_target")
+        )
 
         sentiment_findings = findings.get("sentiment", {}).get("findings", {})
         sentiment_note = sentiment_findings.get("note", "")
@@ -257,6 +260,28 @@ class ReportingAgent(BaseAgent):
         _ts = f"{_now.strftime('%B')} {_now.day}, {_now.year} — {_hour}:{_now.strftime('%M %p')}"
 
         lines: list[str] = []
+
+        # ── Methodology preamble ──────────────────────────────────────────────
+        lines += [
+            "  STOCKEVAL METHODOLOGY",
+            "  ─────────────────────",
+            "  This report uses driver-based scenario modeling: forward revenue ×",
+            "  operating margin × FCF conversion × exit multiple, calibrated against",
+            "  historical peer multiples.  This differs from traditional methods:",
+            "",
+            "    • DCF (Discounted Cash Flow) — discounts projected FCF at WACC.",
+            "      StockEval uses explicit operating drivers but doesn't apply WACC",
+            "      discounting; results may diverge for high-growth tickers.",
+            "    • Intrinsic value — multiplies forward EPS by historical P/E.",
+            "      StockEval shows P/E × forward EPS as a 'supporting method' but",
+            "      doesn't use it as primary, due to EPS volatility on many tickers.",
+            "    • Comparable multiples — applies peer P/E or EV/EBITDA directly.",
+            "      StockEval embeds peer multiples as the 'exit multiple' input.",
+            "",
+            "  When driver model diverges materially from supporting methods, the",
+            "  Methodology Note in the valuation section explains why.",
+            "",
+        ]
 
         # Header
         lines += [
@@ -308,10 +333,42 @@ class ReportingAgent(BaseAgent):
         ]
 
         lines += _header_metrics
-        lines += [
+        _outlook, _action, _action_why = self._derive_outlook_action(sc, price, val_range)
+        _action_detail = ""
+        if _action == "BUY":
+            _action_detail = " (price below P25 fair value — strong entry zone)"
+        elif _action == "STAGED BUY":
+            _action_detail = " (price between P25–P50 fair value — build gradually)"
+        elif _action == "HOLD":
+            _action_detail = " (maintain existing position; price near fair value)"
+        elif _action == "SELL":
+            _action_detail = " (thesis broken or price far above fair value)"
+        elif _action == "WAIT":
+            _action_detail = " (bullish thesis; price above fair value — await pullback)"
+
+        _action_block: list[str] = [
             "─" * 68,
             f"  Overall Score : {sc.overall_score:.0f} / 100",
-            f"  Stance        : {sc.stance.value.upper()}",
+            "═" * 68,
+            f"  OUTLOOK  : {_outlook}",
+            f"  ACTION   : {_action}{_action_detail}",
+        ]
+        if _action_why:
+            # Wrap long why lines at 60 chars
+            _why_prefix = "  WHY     : "
+            _why_wrap   = "             "
+            _why_words  = _action_why.split()
+            _why_line   = _why_prefix
+            for _w in _why_words:
+                if len(_why_line) + len(_w) + 1 > 67:
+                    _action_block.append(_why_line)
+                    _why_line = _why_wrap + _w
+                else:
+                    _why_line += ("" if _why_line.endswith(": ") else " ") + _w
+            if _why_line.strip():
+                _action_block.append(_why_line)
+        _action_block += [
+            "═" * 68,
             *(
                 [f"  Stock Type    : {_st[0]} — {_st[1]}"]
                 if (_st := self._classify_stock_type(sc)) else []
@@ -323,8 +380,9 @@ class ReportingAgent(BaseAgent):
             ),
             "─" * 68,
             "",
-            "  Category Subscores (score × weight = contribution):",
         ]
+        lines += _action_block
+        lines.append("  Category Subscores (score × weight = contribution):")
 
         # Use CategoryScore objects directly so data_quality == "missing" shows as N/A,
         # not as a silent 50/100 default that looks like real data.
@@ -582,7 +640,12 @@ class ReportingAgent(BaseAgent):
             if sc.growth and sc.growth.data_quality != "missing"
             else None
         )
-        lines += self._build_valuation_range_section(val_range, price, growth_score=_growth_score)
+        lines += self._build_valuation_range_section(
+            val_range, price,
+            growth_score    = _growth_score,
+            scenario_tree   = _scenario_tree,
+            analyst_target  = _analyst_consensus_target,
+        )
 
         # ── Peer comparison ────────────────────────────────────────────────────
         peer_cmp = None   # initialise so validation layer always has a reference
@@ -751,6 +814,11 @@ class ReportingAgent(BaseAgent):
                 completeness = "complete"
             lines.append(f"  Result based on  : {completeness} data")
             lines.append("")
+
+        # ── Excel reconciliation (opt-in; only when file exists) ─────────────
+        _excel_data = self._load_excel_summary(ticker)
+        if _excel_data is not None:
+            lines += self._render_excel_reconciliation(_excel_data, val_range, price)
 
         lines.append("=" * 68)
 
@@ -1488,6 +1556,8 @@ class ReportingAgent(BaseAgent):
         vr: "ValuationRange | None",
         current_price: "float | None",
         growth_score: "float | None" = None,
+        scenario_tree: "object | None" = None,
+        analyst_target: "float | None" = None,
     ) -> list[str]:
         """
         Render a bear/base/bull valuation range table with PEG validation.
@@ -1519,6 +1589,13 @@ class ReportingAgent(BaseAgent):
         lines: list[str] = [
             "  Fair Value Range  (primary; driver model)",
             "  ──────────────────────────────────────────",
+        ]
+
+        lines += [
+            "  Note: bear/base/bull describe possible operating outcomes for the",
+            "  business — NOT buy/hold/sell signals.  The ACTION at the top of",
+            "  this report combines these with current price to give a decision.",
+            "",
         ]
 
         if vr is None or vr.data_quality == "missing":
@@ -1769,6 +1846,73 @@ class ReportingAgent(BaseAgent):
                 " — execution risk is elevated."
             )
         lines.append("")
+
+        # ── Comparison of valuation methods (Part 3) ─────────────────────────
+        _dash = "   —"
+        _st_bear = getattr(scenario_tree, "bear_price",  None) if scenario_tree else None
+        _st_base = getattr(scenario_tree, "base_price",  None) if scenario_tree else None
+        _st_bull = getattr(scenario_tree, "bull_price",  None) if scenario_tree else None
+        # Determine which supporting prices exist
+        _pe_b  = vr.pe_base   if vr.pe_base  is not None else None
+        _ev_b  = vr.ev_base   if vr.ev_base  is not None else None
+        _ps_b  = vr.ps_base   if vr.ps_base  is not None else None
+        _any_supporting = any(v is not None for v in [_pe_b, _ev_b, _ps_b, _st_base, analyst_target])
+        if _any_supporting or (vr.bear_price is not None):
+            def _mc(v):
+                return f"${v:>7.0f}" if v is not None else "    —  "
+            lines.append("  Comparison of Valuation Methods")
+            lines.append("  ─────────────────────────────────────────────────────────────")
+            lines.append(f"    {'':28s}  {'Bear':>8}  {'Base':>8}  {'Bull':>8}")
+            lines.append(f"    {'':28s}  {'──────':>8}  {'──────':>8}  {'──────':>8}")
+            lines.append(
+                f"    {'Driver model (primary)':<28s}"
+                f"  {_mc(vr.bear_price):>8}"
+                f"  {_mc(vr.base_price):>8}"
+                f"  {_mc(vr.bull_price):>8}"
+            )
+            if _pe_b is not None:
+                lines.append(
+                    f"    {'P/E × forward EPS':<28s}"
+                    f"  {'    —  ':>8}  {_mc(_pe_b):>8}  {'    —  ':>8}"
+                )
+            if _ev_b is not None:
+                lines.append(
+                    f"    {'EV/EBITDA × EBITDA':<28s}"
+                    f"  {'    —  ':>8}  {_mc(_ev_b):>8}  {'    —  ':>8}"
+                )
+            if _ps_b is not None:
+                lines.append(
+                    f"    {'P/S × revenue':<28s}"
+                    f"  {'    —  ':>8}  {_mc(_ps_b):>8}  {'    —  ':>8}"
+                )
+            if scenario_tree is not None:
+                lines.append(
+                    f"    {'Scenario tree':<28s}"
+                    f"  {_mc(_st_bear):>8}"
+                    f"  {_mc(_st_base):>8}"
+                    f"  {_mc(_st_bull):>8}"
+                )
+            if analyst_target is not None:
+                lines.append(
+                    f"    {'Analyst consensus':<28s}"
+                    f"  {'    —  ':>8}  {_mc(analyst_target):>8}  {'    —  ':>8}"
+                )
+            lines += [
+                "",
+                "  Notes:",
+                "    • Driver model is StockEval's primary — sizing and ACTION use this.",
+                "    • Supporting methods shown for context; they don't drive the recommendation.",
+            ]
+            # Divergence note if supporting methods deviate
+            _divs = [v for v in [_pe_b, _ev_b, _ps_b] if v is not None]
+            if _divs and vr.base_price is not None and vr.base_price > 0:
+                _max_div = max(abs(v - vr.base_price) / vr.base_price for v in _divs)
+                if _max_div >= 0.25:
+                    lines.append(
+                        f"    • Supporting methods diverge ≥{_max_div:.0%} from driver base"
+                        " — see Methodology Note above for explanation."
+                    )
+            lines.append("")
 
         # ── Probability Distribution ──────────────────────────────────────────
         _mc_vr = getattr(vr, "mc", None)
@@ -3457,3 +3601,261 @@ class ReportingAgent(BaseAgent):
             desc = f"Revenue declining at ~{abs(rev_pct):.0f}% CAGR — negative growth trend."
 
         return label, desc
+
+    # ── Stage 4 helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _derive_outlook_action(
+        sc: "Scorecard",
+        price: "float | None",
+        val_range: "ValuationRange | None",
+    ) -> "tuple[str, str, str | None]":
+        """
+        Return (outlook_label, action_label, why_str_or_None).
+
+        OUTLOOK — describes the business thesis (score/stance-based).
+        ACTION  — what to do right now, given current price vs fair value.
+        WHY     — one-sentence explanation when OUTLOOK and ACTION diverge;
+                  None when they are consistent (e.g. Bullish + BUY).
+        """
+        from models.scorecard import Stance as _Stance
+
+        score  = sc.overall_score
+        stance = sc.stance
+        conf   = sc.confidence
+
+        # ── OUTLOOK ──
+        if score >= 65:
+            outlook_base = "Bullish"
+        elif score >= 40:
+            outlook_base = "Neutral"
+        else:
+            outlook_base = "Bearish"
+
+        if conf >= 0.70:
+            conf_tag = "high confidence"
+        elif conf < 0.45:
+            conf_tag = "low confidence — data gaps present"
+        else:
+            conf_tag = ""
+        outlook = f"{outlook_base} — {conf_tag}" if conf_tag else outlook_base
+
+        # ── Hard SELL ──
+        if score < 40 or stance == _Stance.BEARISH:
+            return outlook, "SELL", "Score/thesis is bearish — consider exiting or avoiding."
+
+        # ── Price zone (P25 / P50 proxies) ──
+        vr = val_range
+        mc = getattr(vr, "mc", None) if vr else None
+        if mc and getattr(mc, "p25_price", None) and getattr(mc, "median_price", None):
+            p25 = mc.p25_price
+            p50 = mc.median_price
+        elif vr and vr.bear_price and vr.base_price:
+            p25 = vr.bear_price * 1.15   # rough P25 proxy (bear ≈ P10, scale up)
+            p50 = vr.base_price
+        else:
+            p25 = None
+            p50 = None
+
+        if price and p25 and price < p25:
+            zone = "below_p25"
+        elif price and p50 and price < p50:
+            zone = "between_p25_p50"
+        elif price and p50 and price >= p50:
+            zone = "above_p50"
+        else:
+            zone = "unknown"
+
+        p50_str = f"${p50:.0f}" if p50 else "fair value"
+        p25_str = f"~${p25:.0f}" if p25 else "below fair value"
+
+        # ── Bullish ──
+        if stance == _Stance.BULLISH:
+            if zone == "below_p25":
+                return outlook, "BUY", None
+            if zone == "between_p25_p50":
+                return outlook, "STAGED BUY", None
+            # above P50 or unknown — WAIT
+            why = (
+                f"Long-term thesis is positive, but current price is at or above "
+                f"{p50_str} (driver-model base case / P50). "
+                f"Better entry expected on pullback to {p25_str}."
+            )
+            return outlook, "WAIT", why
+
+        # ── Neutral ──
+        if zone == "above_p50":
+            why = (
+                f"Neutral thesis — current price at or above {p50_str} "
+                "(driver-model base). No favorable risk/reward for new entry."
+            )
+            return outlook, "WAIT", why
+        if zone in ("below_p25", "between_p25_p50"):
+            return outlook, "HOLD", None
+        return outlook, "WAIT", "Neutral thesis — no clear entry signal from price zone."
+
+    @staticmethod
+    def _load_excel_summary(ticker: str) -> "dict | None":
+        """
+        Load data/excel_summaries/{TICKER}_excel.json if it exists.
+        Returns None when file is absent (opt-in; silently skipped).
+        Gracefully returns None on malformed JSON or OS errors.
+        """
+        from pathlib import Path
+        import json as _json
+
+        path = Path(f"data/excel_summaries/{ticker}_excel.json")
+        if not path.exists():
+            return None
+        try:
+            return _json.loads(path.read_text())
+        except (ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _render_excel_reconciliation(
+        excel: dict,
+        vr: "ValuationRange | None",
+        current_price: "float | None",
+    ) -> list[str]:
+        """
+        Render the EXCEL RECONCILIATION section.
+        All rows are optional — missing fields display a dash, never break.
+        """
+        lines: list[str] = []
+
+        model_date = excel.get("model_date", "unknown date")
+        lines += [
+            "─" * 68,
+            "  EXCEL RECONCILIATION",
+            "─" * 68,
+            f"  Excel model dated: {model_date}",
+            "",
+        ]
+
+        col_w = 16   # Excel col width
+        se_w  = 18   # StockEval col width
+        dw    = 7    # Δ col width
+        note_w = 20
+
+        hdr = (
+            f"    {'':26s}  {'Excel':>{col_w}}  {'StockEval':>{se_w}}"
+            f"  {'Δ':>{dw}}  Note"
+        )
+        sep = (
+            f"    {'':26s}  {'────────':>{col_w}}  {'──────────────':>{se_w}}"
+            f"  {'───────':>{dw}}  ───────────────────"
+        )
+        lines += [hdr, sep]
+
+        def _fmt_price(v: "float | None") -> str:
+            return f"${v:.2f}" if isinstance(v, (int, float)) else "—"
+
+        def _delta_note(excel_v: "float | None", se_v: "float | None", se_label: str = "") -> "tuple[str, str]":
+            """Return (delta_str, note_str) for a pair of prices."""
+            if excel_v is None or se_v is None or se_v == 0:
+                return "—", se_label if se_label else ""
+            d = (se_v - excel_v) / abs(excel_v)
+            d_str = f"{d:+.0%}"
+            if abs(d) <= 0.02:
+                note = "✓ matches"
+            elif abs(d) <= 0.10:
+                note = f"close (Δ within 10%)"
+            else:
+                note = se_label if se_label else f"see methodology note"
+            return d_str, note
+
+        def _row(label: str, excel_v: "float | None", se_v: "float | None",
+                 se_label: str = "", forced_note: str = "") -> str:
+            e_str = _fmt_price(excel_v)
+            s_str = (_fmt_price(se_v) + (f" ({se_label})" if se_label else "")) if se_v is not None else "—"
+            if forced_note:
+                d_str, note = "—", forced_note
+            else:
+                d_str, note = _delta_note(excel_v, se_v)
+            return (
+                f"    {label:<26s}  {e_str:>{col_w}}  {s_str:>{se_w}}"
+                f"  {d_str:>{dw}}  {note}"
+            )
+
+        # Current price
+        excel_price = excel.get("current_price_excel")
+        lines.append(_row("Current price", excel_price, current_price,
+                          forced_note="Live intraday" if excel_price and current_price else ""))
+
+        # 2026 fair value (Excel has 5Y midpoint; StockEval driver base is 1Y)
+        fv_2026     = excel.get("fair_value_2026")
+        fv_range    = excel.get("fair_value_2026_range") or []
+        fv_low      = fv_range[0] if len(fv_range) > 0 else None
+        fv_high     = fv_range[1] if len(fv_range) > 1 else None
+        se_base     = vr.base_price if vr else None
+        fv_range_str = f"[${fv_low:.0f}–${fv_high:.0f}]" if fv_low and fv_high else ""
+        e_fv_str    = (f"${fv_2026:.2f} {fv_range_str}".strip()) if fv_2026 else "—"
+        lines.append(
+            f"    {'2026 Fair Value':<26s}  {e_fv_str:>{col_w}}  {'not computed':>{se_w}}"
+            f"  {'—':>{dw}}  Excel uses 5Y midpoint"
+        )
+
+        # DCF
+        dcf         = excel.get("dcf_2026")
+        pe_base_se  = vr.pe_base if vr else None
+        d_str, note = _delta_note(dcf, pe_base_se)
+        if dcf and pe_base_se:
+            note = "P/E approx of DCF"
+        lines.append(_row("2026 DCF", dcf, pe_base_se, "P/E", forced_note=note if note != "—" else ""))
+
+        # Intrinsic value
+        iv          = excel.get("intrinsic_2026")
+        lines.append(_row("2026 Intrinsic value", iv, pe_base_se, "P/E",
+                          forced_note="Same P/E approximation" if iv else ""))
+
+        # Driver model base
+        driver_base = vr.base_price if vr else None
+        lines.append(
+            f"    {'Driver scenario base':<26s}  {'—':>{col_w}}  {_fmt_price(driver_base):>{se_w}}"
+            f"  {'—':>{dw}}  SE primary"
+        )
+
+        # Forward EPS fields
+        eps_2026 = excel.get("expected_eps_2026")
+        lines.append(
+            f"    {'Forward EPS 2026':<26s}  {_fmt_price(eps_2026):>{col_w}}  {'—':>{se_w}}"
+            f"  {'—':>{dw}}  SE doesn't compute fwd EPS"
+        )
+        eps_2027 = excel.get("expected_eps_2027")
+        if eps_2027:
+            lines.append(
+                f"    {'Forward EPS 2027':<26s}  {_fmt_price(eps_2027):>{col_w}}  {'—':>{se_w}}"
+                f"  {'—':>{dw}}  SE doesn't compute fwd EPS"
+            )
+
+        # Beta
+        excel_beta = excel.get("beta")
+        from models.stock_data import StockData as _SD   # noqa: F401 (type-only use at runtime)
+        # We don't have beta directly here; show Excel value only
+        if excel_beta is not None:
+            lines.append(
+                f"    {'Beta':<26s}  {excel_beta:>{col_w}.2f}  {'from stock profile':>{se_w}}"
+                f"  {'—':>{dw}}  verify in stock header"
+            )
+
+        # WACC
+        wacc = excel.get("wacc")
+        if wacc is not None:
+            lines.append(
+                f"    {'WACC':<26s}  {wacc*100:>{col_w}.1f}%  {'not used':>{se_w}}"
+                f"  {'—':>{dw}}  SE uses exit multiple, not WACC"
+            )
+
+        # Avg P/E
+        avg_pe = excel.get("average_pe_ratio")
+        pe_range = excel.get("pe_ratio_range") or []
+        if avg_pe is not None:
+            pe_range_str = f"[{pe_range[0]:.0f}x–{pe_range[1]:.0f}x]" if len(pe_range) >= 2 else ""
+            lines.append(
+                f"    {'Avg P/E (Excel)':<26s}  {avg_pe:>{col_w}.1f}x  {'see peer table':>{se_w}}"
+                f"  {'—':>{dw}}  {pe_range_str}"
+            )
+
+        lines.append("")
+        return lines

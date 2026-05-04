@@ -1,0 +1,26 @@
+{
+  "ticker": "TTD",
+  "model_date": "2026-04-29",
+
+  "current_price_excel": 23.68,
+
+  "fair_value_2026": 120.43,
+  "fair_value_2026_range": [50.51, 205.68],
+
+  "dcf_2026": 42.81,
+  "dcf_2026_range": [23.85, 76.65],
+
+  "intrinsic_2026": 43.30,
+  "intrinsic_2026_range": [31.46, 64.68],
+
+  "expected_eps_2026": 1.27,
+  "expected_eps_2027": 1.49,
+  "expected_eps_2028": 1.69,
+
+  "beta": 1.17,
+  "wacc": 0.0835,
+  "projected_growth": 0.0999,
+
+  "average_pe_ratio": 94.83,
+  "pe_ratio_range": [39.77, 161.95]
+}

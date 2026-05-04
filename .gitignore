@@ -52,3 +52,6 @@ utils/utils.ts
 
 # Claude Code local skills (developer tooling, not project code)
 .claude/
+
+# TypeScript incremental compilation cache
+*.tsbuildinfo

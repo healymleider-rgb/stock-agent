@@ -234,7 +234,7 @@ def _ar1_regression(series: List[float]) -> Tuple[float, float, float, int]:
         return 0.5, 0.0, 0.0, n
 
     intercept = beta[0]
-    rho       = max(-1.0, min(1.5, beta[1]))
+    rho       = max(-0.97, min(0.97, beta[1]))  # bound to stationary region
 
     y_pred = [intercept + rho * y_lag[i] for i in range(n)]
     r2     = _r_squared(y_curr, y_pred)

@@ -442,8 +442,8 @@ def _leaf_eps_growth(
         slope = getattr(hrl_result, "margin_trend_slope", 0.0) or 0.0
         if ar1_g is not None:
             base_g = 0.70 * base_g + 0.30 * ar1_g
-        # Margin slope adds operating-leverage-adjusted EPS impact
-        base_g += slope * 8.0
+        # Margin slope adds operating-leverage-adjusted EPS impact (±10pp cap)
+        base_g += max(-0.10, min(0.10, slope * 8.0))
 
     return max(-0.70, min(1.50, base_g))
 

@@ -135,6 +135,10 @@ class MemoInput:
     # as "[Metric]: subject [X] vs peer median [Y] — [interpretation]".
     peer_medians: dict = field(default_factory=dict)
     peer_rows:    list = field(default_factory=list)
+    # ACTION from _derive_outlook_action ("BUY", "STAGED BUY", "WAIT", "HOLD", "SELL").
+    # When set, TOP TAKEAWAY and FINAL VERDICT derive their rating language from
+    # this value rather than the raw score/stance rating string.
+    action:       str  = ""
 
 
 @dataclass
@@ -498,7 +502,8 @@ class MemoEngine:
             # All generation methods receive the Pass 1 synthesis where possible.
             # _thesis_bullets uses synthesis for weight-ordered category bullets.
             # _risk_bullets uses peer_medians for peer-relative valuation framing.
-            takeaway    = self._top_takeaway(sc, inp.company, mac, inp.pe)
+            takeaway    = self._top_takeaway(sc, inp.company, mac, inp.pe,
+                                              action=getattr(inp, "action", ""))
             thesis      = self._thesis_bullets(sc, synthesis)
             risks       = self._risk_bullets(
                 sc, mac, inp.pe, inp.ps, inp.ev_ebitda,
@@ -506,7 +511,7 @@ class MemoEngine:
                 peer_rows=inp.peer_rows,
             )
             change_view = self._change_view_bullets(sc)
-            verdict     = self._verdict(sc)
+            verdict     = self._verdict(sc, action=getattr(inp, "action", ""))
             tension     = self._key_tension(sc) if self._include_tension else None
 
             result = MemoResult(
@@ -624,6 +629,7 @@ class MemoEngine:
         company: str,
         macro:   dict,
         pe:      Optional[float],
+        action:  str = "",
     ) -> str:
         """
         2–3 sentences. Total target: ≤45 words.
@@ -712,7 +718,25 @@ class MemoEngine:
             ]
             if score is not None and score < 45
         ]
-        if weak_cats:
+        if action == "BUY":
+            if weak_cats:
+                constraint = weak_cats[0][0]
+                s3 = f"Rating: Buy — price in strong entry zone; {constraint} is the key risk to monitor."
+            else:
+                s3 = f"Rating: Buy with {conf_label} conviction — price below fair value, fundamentals support the thesis."
+        elif action == "STAGED BUY":
+            if weak_cats:
+                constraint = weak_cats[0][0]
+                s3 = f"Rating: Staged Buy — build gradually; {constraint} warrants a measured entry."
+            else:
+                s3 = f"Rating: Staged Buy — price in the entry zone; accumulate on further weakness."
+        elif action == "WAIT":
+            s3 = "Rating: Wait — long-term thesis intact; price at or above fair value, await a pullback."
+        elif action == "HOLD":
+            s3 = "Rating: Hold — fundamentals support the thesis; no immediate entry catalyst at current price."
+        elif action == "SELL":
+            s3 = "Rating: Sell — thesis broken or price materially above fair value."
+        elif weak_cats:
             constraint = weak_cats[0][0]
             s3 = f"Rating: {rating} with {conf_label} conviction — {constraint} caps near-term upside."
         else:
@@ -1053,7 +1077,7 @@ class MemoEngine:
 
     # ── Verdict ────────────────────────────────────────────────────────────────
 
-    def _verdict(self, sc: object) -> str:
+    def _verdict(self, sc: object, action: str = "") -> str:
         """
         One crisp sentence. Pattern:
         "[Primary strength] supports [rating], but [key constraint] warrants [action/monitoring]."
@@ -1091,7 +1115,67 @@ class MemoEngine:
             if score is not None and score < 45
         ]
 
-        if strengths and concerns:
+        s_lbl = strengths[0][0] if strengths else "quality fundamentals"
+        c_lbl = concerns[0][0] if concerns else "risk management"
+
+        if action == "BUY":
+            if strengths and concerns:
+                return _clean(
+                    f"{s_lbl.capitalize()} and attractive entry price support the Buy —"
+                    f" {c_lbl} is the key risk; size accordingly."
+                )
+            elif strengths:
+                return _clean(
+                    f"{s_lbl.capitalize()} supports the Buy — price is below fair value"
+                    f" with no dominant constraint on position size."
+                )
+            else:
+                return _clean(
+                    f"Price below fair value supports the Buy — monitor {c_lbl}"
+                    f" as the primary near-term risk."
+                )
+        elif action == "STAGED BUY":
+            if concerns:
+                return _clean(
+                    f"Staged entry is warranted — {c_lbl} limits conviction;"
+                    f" build the position gradually as the thesis confirms."
+                )
+            else:
+                return _clean(
+                    f"{s_lbl.capitalize()} supports a staged entry —"
+                    f" accumulate gradually; price is in the entry zone."
+                )
+        elif action == "HOLD":
+            if strengths:
+                return _clean(
+                    f"{s_lbl.capitalize()} supports holding the position —"
+                    f" no immediate entry catalyst; maintain and monitor."
+                )
+            else:
+                return _clean(
+                    "Fundamentals support holding — no clear entry or exit signal at current price."
+                )
+        elif action == "SELL":
+            if concerns:
+                return _clean(
+                    f"{c_lbl.capitalize()} is the dominant risk — the thesis is broken"
+                    f" or price is materially above fair value; consider exiting."
+                )
+            else:
+                return _clean(
+                    "Thesis is broken or price is materially above fair value — consider exiting."
+                )
+        elif action == "WAIT" and strengths:
+            return _clean(
+                f"{s_lbl.capitalize()} supports the long-term thesis —"
+                f" price at or above fair value; waiting for a better entry."
+            )
+        elif action == "WAIT":
+            return _clean(
+                "Long-term thesis is intact — price at or above fair value;"
+                " waiting for a pullback before initiating."
+            )
+        elif strengths and concerns:
             s_lbl = strengths[0][0]
             c_lbl = concerns[0][0]
             return _clean(

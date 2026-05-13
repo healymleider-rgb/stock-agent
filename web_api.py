@@ -14,12 +14,16 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import re
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+# Accepts standard tickers plus class-share notation: BRK.B, BRK-B, GOOGL-C, etc.
+_TICKER_PATTERN = re.compile(r'^[A-Za-z][A-Za-z0-9.\-]{0,9}$')
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +172,9 @@ def _extract_stock_info(state: Any, metrics: NormalizedMetrics) -> dict:
     sd   = state.stock_data
     info: dict[str, Any] = {}
 
+    # Always populated — the input ticker is canonical (state.ticker is set at construction).
+    info["ticker"] = state.ticker
+
     # ── Profile fields ─────────────────────────────────────────────────────────
     try:
         p = sd.profile
@@ -184,6 +191,25 @@ def _extract_stock_info(state: Any, metrics: NormalizedMetrics) -> dict:
         info.setdefault("industry",     "")
         info.setdefault("description",  "")
         info.setdefault("beta",         None)
+
+    # ── Beta reliability — recomputed from live price_history ────────────────
+    # NormalizedMetrics.beta_reliable is computed early (before price_history is
+    # fetched) so beta_months may be 0 there.  Re-derive here from the fully-
+    # populated stock_data so the web API shows the correct month count.
+    _ph_closes  = getattr(getattr(sd, "price_history", None), "closes", []) or []
+    _ph_months  = int(len(_ph_closes) / 21)
+    _raw_beta   = getattr(p, "beta", None) if p else None
+    _b_reliable = (
+        _ph_months >= 24
+        and (_raw_beta is None or abs(_raw_beta) <= 5.0)
+    ) if _ph_closes else getattr(metrics, "beta_reliable", True)
+    info["beta_reliable"] = _b_reliable
+    info["beta_months"]   = _ph_months if _ph_closes else getattr(metrics, "beta_months", 0)
+
+    # ── Currency mismatch — from NormalizedMetrics ────────────────────────────
+    info["currency_mismatch"]   = getattr(metrics, "currency_mismatch",   False)
+    info["financials_currency"] = getattr(metrics, "financials_currency", "USD")
+    info["price_currency"]      = getattr(metrics, "price_currency",      "USD")
 
     # ── Price and market cap — from NormalizedMetrics ─────────────────────────
     info["current_price"] = metrics.price
@@ -253,6 +279,26 @@ def _extract_stock_info(state: Any, metrics: NormalizedMetrics) -> dict:
     info["shares_filing_date"]       = getattr(_stmt0, "filing_date", None)
     info["shares_filing_url"]        = sd.shares_filing_url
     info["shares_data_refreshed_at"] = sd.shares_data_refreshed_at
+
+    # ── YoY growth rates — derived from the two most recent annual statements ──
+    # FMP does not return YoY growth directly; compute here so all consumers
+    # (frontend, peer table) use a single consistent definition.
+    _incs = sd.income_statements
+    _rev_g: Optional[float] = None
+    _eps_g: Optional[float] = None
+    if len(_incs) >= 2:
+        _r0 = getattr(_incs[0], "revenue", None)
+        _r1 = getattr(_incs[1], "revenue", None)
+        if _r0 is not None and _r1 and _r1 > 0:
+            _rev_g = round((_r0 / _r1 - 1) * 100, 1)
+
+        _e0 = getattr(_incs[0], "eps_diluted", None) or getattr(_incs[0], "eps", None)
+        _e1 = getattr(_incs[1], "eps_diluted", None) or getattr(_incs[1], "eps", None)
+        # Undefined when prior EPS was negative (direction flip makes % misleading)
+        if _e0 is not None and _e1 is not None and _e1 > 0:
+            _eps_g = round((_e0 / _e1 - 1) * 100, 1)
+    info["revenue_growth_yoy"] = _rev_g
+    info["eps_growth_yoy"]     = _eps_g
 
     # ── Metric provenance (helps frontend show source badges) ────────────────
     info["_sources"] = {
@@ -378,29 +424,37 @@ def _extract_peer_comparison(state: Any, metrics: NormalizedMetrics) -> dict:
             f" mktcap={target_mkt_cap}({metrics.market_cap_source})"
         )
 
-        pc = build_peer_comparison(
-            target_ticker             = state.ticker,
-            target_pe                 = target_pe,
-            target_ps                 = target_ps,
-            target_growth             = target_growth,
-            target_peg                = target_peg,
-            target_ev_ebitda          = target_ev_ebitda,
-            sector                    = sector,
-            industry                  = industry,
-            target_stock_data         = sd,
-            target_mkt_cap            = target_mkt_cap,
-            target_company_name       = company,
-            target_revenue_growth     = target_revenue_growth,
-            target_gross_margin       = target_gross_margin,
-            target_operating_margin   = target_operating_margin,
-            target_net_margin         = target_net_margin,
-            target_roe                = target_roe,
-            target_roic               = target_roic,
-            target_debt_equity        = target_debt_equity,
-            target_current_ratio      = target_current_ratio,
-            target_interest_coverage  = target_interest_coverage,
-            target_beta               = target_beta,
-        )
+        # Reuse the PeerComparison already built and validated by ReportingAgent.
+        # Avoids a second independent build_peer_comparison call (and its FMP API
+        # round-trips) — the primary cause of missing peer sections in batch runs
+        # where the duplicate calls exhaust the FMP rate limit.
+        _cached_pc = (getattr(state, "agent_findings", None) or {}).get("peer_comparison")
+        if _cached_pc is not None:
+            pc = _cached_pc
+        else:
+            pc = build_peer_comparison(
+                target_ticker             = state.ticker,
+                target_pe                 = target_pe,
+                target_ps                 = target_ps,
+                target_growth             = target_growth,
+                target_peg                = target_peg,
+                target_ev_ebitda          = target_ev_ebitda,
+                sector                    = sector,
+                industry                  = industry,
+                target_stock_data         = sd,
+                target_mkt_cap            = target_mkt_cap,
+                target_company_name       = company,
+                target_revenue_growth     = target_revenue_growth,
+                target_gross_margin       = target_gross_margin,
+                target_operating_margin   = target_operating_margin,
+                target_net_margin         = target_net_margin,
+                target_roe                = target_roe,
+                target_roic               = target_roic,
+                target_debt_equity        = target_debt_equity,
+                target_current_ratio      = target_current_ratio,
+                target_interest_coverage  = target_interest_coverage,
+                target_beta               = target_beta,
+            )
 
         # Serialize rows.
         # growth_pct (percentage, e.g. 12.5) → eps_growth (decimal, e.g. 0.125)
@@ -817,7 +871,7 @@ def _run_evaluation(job_id: str, ticker: str) -> None:
 def start_evaluation(body: EvaluateRequest) -> EvaluateResponse:
     """Start a background evaluation. Returns a job_id immediately."""
     ticker = body.ticker.strip().upper()
-    if not ticker or not ticker.isalpha() or len(ticker) > 10:
+    if not ticker or not _TICKER_PATTERN.match(ticker):
         raise HTTPException(status_code=400, detail="Invalid ticker symbol.")
 
     if body.force_validation_override and not (body.force_justification or "").strip():
@@ -872,7 +926,7 @@ def analyze_ticker_endpoint(ticker: str, job_id: str) -> dict:
     analysis plus a validation_summary.
     """
     ticker = ticker.upper().strip()
-    if not ticker.isalpha() or len(ticker) > 10:
+    if not ticker or not _TICKER_PATTERN.match(ticker):
         raise HTTPException(status_code=400, detail="Invalid ticker symbol")
 
     job = _jobs.get(job_id)

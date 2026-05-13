@@ -29,6 +29,7 @@ class CompanyProfile:
     website: str = ""
     ceo: str = ""
     ipo_date: str = ""
+    currency: str = "USD"   # currency of the price/market cap (e.g. "USD")
 
 
 # ── Income Statement ───────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ class IncomeStatement:
     selling_expenses: Optional[float] = None
     interest_expense: Optional[float] = None
     filing_date: Optional[str] = None         # when company filed with SEC, e.g. "2026-02-03"
+    reported_currency: str = "USD"            # FMP reportedCurrency (e.g. "CNY", "JPY")
 
 
 # ── Balance Sheet ──────────────────────────────────────────────────────────────

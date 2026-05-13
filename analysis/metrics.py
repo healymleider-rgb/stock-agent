@@ -128,8 +128,31 @@ class NormalizedMetrics:
     peg_note:       str = ""    # set when method != eps_cagr
 
     # ── Provider-only ratios (no computed alternative) ────────────────────────
-    roe:              Optional[float] = None
+    roe:                  Optional[float] = None
+    roe_not_meaningful:   bool = False    # True when equity is negative or < 5% of assets
     roa:              Optional[float] = None
+
+    # ── Beta reliability ──────────────────────────────────────────────────────
+    beta_reliable: bool = True   # False when < 24 months history OR |beta| > 5.0
+    beta_months:   int  = 0      # months of price history (trading days / 21)
+
+    # ── Currency mismatch ─────────────────────────────────────────────────────
+    # True when profile.currency (price/market-cap currency, e.g. "USD") differs
+    # from income statement reportedCurrency (e.g. "CNY" for BABA, "JPY" for TM).
+    # When True, pipeline-computed ratios (P/E, P/S, EV/EBITDA) are suppressed
+    # and replaced by FMP /ratios endpoint values which are already normalised.
+    currency_mismatch:    bool = False
+    price_currency:       str  = ""   # from CompanyProfile.currency
+    financials_currency:  str  = ""   # from IncomeStatement.reported_currency
+
+    # ── EPS one-time inflation dampening ─────────────────────────────────────
+    # Set by score_growth() when detect_eps_one_time_inflation() fires (2+ signals).
+    # effective_pct caps eps_growth_pct scoring at min(raw, rev_cagr_3y * 1.5).
+    eps_one_time_dampened:     bool            = False
+    eps_one_time_raw_pct:      Optional[float] = None   # pre-dampening CAGR %
+    eps_one_time_effective_pct: Optional[float] = None  # post-dampening CAGR %
+    eps_one_time_reason:       str             = ""     # comma-separated signal IDs that fired
+
     gross_margin:     Optional[float] = None
     net_margin:       Optional[float] = None
     operating_margin: Optional[float] = None
@@ -374,6 +397,33 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
             f" net_income={m.net_income}"
         )
 
+    # ── 4b. CURRENCY MISMATCH DETECTION ──────────────────────────────────────
+    # FMP returns income-statement financials in the company's home currency
+    # (e.g. CNY for Alibaba, JPY for Toyota) but prices and market cap in USD.
+    # When currencies differ, any ratio we compute from USD mktcap / foreign-
+    # currency revenue/EBITDA/EPS is off by the FX rate. We detect this and
+    # suppress all pipeline-computed ratios (P/E, P/S, EV/EBITDA) so the
+    # fallthrough logic picks up the FMP /ratios endpoint values, which FMP
+    # already normalises consistently within the same currency basis.
+    _profile_currency    = (getattr(stock_data.profile, "currency", None) or "USD").strip().upper()
+    _financials_currency = (
+        (stock_data.income_statements[0].reported_currency or "USD")
+        if stock_data.income_statements else "USD"
+    ).strip().upper()
+    m.price_currency      = _profile_currency
+    m.financials_currency = _financials_currency
+    m.currency_mismatch   = (
+        bool(_profile_currency)
+        and bool(_financials_currency)
+        and _profile_currency != _financials_currency
+    )
+    if m.currency_mismatch:
+        _log(
+            f"CURRENCY_MISMATCH: price_currency={_profile_currency}"
+            f" financials_currency={_financials_currency}"
+            f" — pipeline-computed ratios suppressed; /ratios endpoint values used"
+        )
+
     # ── 5. TTM EPS — sum of last 4 quarterly EPS ──────────────────────────────
     quarters = stock_data.quarterly_income[:4] if stock_data.quarterly_income else []
     _log(f"TTM_EPS: {len(quarters)} quarterly statements available")
@@ -451,6 +501,20 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
         m.pb_ratio           = ratios.pb_ratio
         m.dividend_yield     = ratios.dividend_yield
 
+    # Null out ROE when shareholders' equity is negative or tiny relative to
+    # assets — the ratio is arithmetically defined but economically meaningless
+    # (sign and magnitude are driven by the equity denominator, not by returns).
+    if m.roe is not None and balance is not None:
+        eq = balance.total_equity
+        ta = balance.total_assets
+        if eq is not None and (eq < 0 or (ta and ta > 0 and abs(eq) < 0.05 * ta)):
+            _log(
+                f"ROE: nulled (equity={eq:,.0f}  assets={ta}  ratio={eq/ta:.3f}"
+                f" < 5% threshold) — marking roe_not_meaningful=True"
+            )
+            m.roe = None
+            m.roe_not_meaningful = True
+
     # Derive margins from statements when ratios are absent
     if income and income.revenue and income.revenue > 0:
         rev = income.revenue
@@ -488,6 +552,21 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
 
     if m.pe_provider_ttm:
         _log(f"PE: provider_ttm={m.pe_provider_ttm:.2f}")
+
+    # Currency mismatch — USD price divided by foreign-currency EPS gives a meaningless ratio.
+    # Nullify both computed values so the selection logic falls through to provider_ttm.
+    if m.currency_mismatch:
+        if m.pe_computed_ttm is not None:
+            _log(
+                f"PE: currency mismatch ({m.price_currency}/{m.financials_currency})"
+                f" → suppressing computed_ttm={m.pe_computed_ttm:.4f}; using provider"
+            )
+            m.pe_computed_ttm = None
+        if m.pe_computed_ann is not None:
+            _log(
+                f"PE: currency mismatch → suppressing computed_ann={m.pe_computed_ann:.4f}"
+            )
+            m.pe_computed_ann = None
 
     # Selection: computed_ttm first (price / sum of last 4 quarterly EPS — primary source),
     # then provider_ttm (FMP field — useful cross-check but can lag or use a different EPS base),
@@ -532,6 +611,14 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
     if m.ps_provider:
         _log(f"PS: provider={m.ps_provider:.2f}")
 
+    # Currency mismatch — USD market cap divided by foreign-currency revenue is wrong.
+    if m.currency_mismatch and m.ps_computed is not None:
+        _log(
+            f"PS: currency mismatch ({m.price_currency}/{m.financials_currency})"
+            f" → suppressing computed={m.ps_computed:.4f}; using provider"
+        )
+        m.ps_computed = None
+
     if m.ps_computed is not None:
         m.ps_ratio  = m.ps_computed
         m.ps_source = "computed"
@@ -573,6 +660,15 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
 
     if m.ev_ebitda_provider:
         _log(f"EV_EBITDA: provider={m.ev_ebitda_provider:.2f}")
+
+    # Currency mismatch — USD mktcap + foreign-currency debt/cash / foreign-currency EBITDA
+    # produces a nonsense ratio (USD numerator, foreign denominator).
+    if m.currency_mismatch and m.ev_ebitda_computed is not None:
+        _log(
+            f"EV_EBITDA: currency mismatch ({m.price_currency}/{m.financials_currency})"
+            f" → suppressing computed={m.ev_ebitda_computed:.4f}; using provider"
+        )
+        m.ev_ebitda_computed = None
 
     if m.ev_ebitda_computed is not None:
         m.ev_ebitda        = m.ev_ebitda_computed
@@ -735,6 +831,20 @@ def compute_core_metrics(stock_data: StockData) -> NormalizedMetrics:
         _log(f"PEG: EPS growth ≤0 ({m.eps_growth_pct:.1f}%) → PEG not meaningful")
     else:
         _log(f"PEG: unavailable (pe={m.pe_ratio}, growth={m.eps_growth_pct})")
+
+    # ── BETA RELIABILITY ─────────────────────────────────────────────────────
+    _closes      = stock_data.price_history.closes if stock_data.price_history else []
+    _beta_months = int(len(_closes) / 21)
+    _raw_beta    = getattr(stock_data.profile, "beta", None) if stock_data.profile else None
+    m.beta_months   = _beta_months
+    m.beta_reliable = (
+        _beta_months >= 24
+        and (_raw_beta is None or abs(_raw_beta) <= 5.0)
+    )
+    _log(
+        f"BETA: months={_beta_months} raw_beta={_raw_beta}"
+        f" reliable={m.beta_reliable}"
+    )
 
     # ── FINAL SUMMARY ─────────────────────────────────────────────────────────
     sh_str = f"{m.shares:,.0f}" if m.shares else "N/A"

@@ -292,10 +292,30 @@ def _score_growth_risk(pe, eps_growth_pct, stock_data: StockData):
     return pg_s * 0.40 + div_s * 0.30 + cons_s * 0.30, factors
 
 
-def _score_market_risk(beta, price_history):
+def _score_market_risk(beta, price_history, beta_reliable=True, beta_months=0):
     factors = []
 
-    if beta is None:
+    # Recompute months from live price_history (more accurate than the pre-computed
+    # value, which is derived before price history is fully loaded).
+    _live_closes  = getattr(price_history, "closes", []) if price_history else []
+    _live_months  = int(len(_live_closes) / 21)
+    _live_reliable = (
+        _live_months >= 24
+        and (beta is None or abs(beta) <= 5.0)
+    )
+    # Use whichever is more informative: if live data is available prefer it,
+    # otherwise fall back to the pre-computed flag from NormalizedMetrics.
+    _use_reliable = _live_reliable if _live_closes else beta_reliable
+    _use_months   = _live_months   if _live_closes else beta_months
+
+    if not _use_reliable:
+        beta_s = 65  # neutral — don't penalise on unreliable figure
+        _hist_note = f" ({_use_months} months of history)" if _use_months > 0 else ""
+        factors.append(
+            f"[RISK] Limited trading history — beta unreliable{_hist_note};"
+            f" volatility metrics may understate risk"
+        )
+    elif beta is None:
         beta_s = 65
     elif beta <= 0.3:
         beta_s = 92
@@ -441,6 +461,29 @@ def _score_qualitative_risk(stock_data: StockData):
             "growth segment creates capital allocation tension and margin pressure"
         )
 
+    # ── Single-product clinical-stage biotech ─────────────────────────────────
+    # Small healthcare companies with one approved/pipeline product carry
+    # concentrated FDA, promotional compliance, and securities litigation risk
+    # that financial statements cannot surface.  Flag when net margin < -100%
+    # and revenue < $200M in Healthcare/Biotech or Pharmaceuticals.
+    _biotech_industries = ("biotechnology", "pharmaceuticals", "drug manufacturers")
+    _is_small_biotech = (
+        sector == "healthcare"
+        and any(kw in industry for kw in _biotech_industries)
+    )
+    if _is_small_biotech and inc:
+        rev = getattr(inc, "revenue", None)
+        nm  = getattr(inc, "net_income_ratio", None)
+        if nm is None and rev and rev > 0 and getattr(inc, "net_income", None) is not None:
+            nm = inc.net_income / rev
+        if nm is not None and nm < -1.0 and rev is not None and rev < 200_000_000:
+            factors.append(
+                "[RISK] Single-product clinical-stage company — review FDA filings, "
+                "promotional compliance issues, and pending litigation before "
+                "initiating position. StockEval cannot detect these from financial "
+                "data alone."
+            )
+
     # ── Composite — max 95, realistic range 60-85 ────────────────────────────
     raw_qual = base * 0.45 + capex_s * 0.30 + gw_s * 0.25 - structural_deduction
     return raw_qual, factors
@@ -479,11 +522,16 @@ def score_risk(
     rev = getattr(income,   "revenue",        None) if income   else None
     eps_growth_pct = getattr(metrics, "eps_growth_pct", None) if metrics else None
     beta           = profile.beta if profile else None
+    _beta_reliable = getattr(metrics, "beta_reliable", True)  if metrics else True
+    _beta_months   = getattr(metrics, "beta_months",   0)     if metrics else 0
 
     fin_score,  fin_factors  = _score_financial_risk(de, ic, cr, fcf, rev)
     biz_score,  biz_factors  = _score_business_model_risk(stock_data)
     grw_score,  grw_factors  = _score_growth_risk(pe, eps_growth_pct, stock_data)
-    mkt_score,  mkt_factors  = _score_market_risk(beta, stock_data.price_history)
+    mkt_score,  mkt_factors  = _score_market_risk(
+        beta, stock_data.price_history,
+        beta_reliable=_beta_reliable, beta_months=_beta_months,
+    )
     qual_score, qual_factors = _score_qualitative_risk(stock_data)
 
     composite = (

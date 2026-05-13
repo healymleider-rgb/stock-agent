@@ -129,6 +129,7 @@ _TICKER_PEERS: dict[str, list[str]] = {
     "PFE":  ["JNJ",  "ABBV",  "MRK",  "BMY",  "LLY"],
     "ABBV": ["JNJ",  "PFE",   "MRK",  "BMY",  "LLY"],
     "LLY":  ["NVO",  "ABBV",  "JNJ",  "MRK",  "BMY"],
+    "AZN":  ["PFE",  "MRK",   "BMY",  "ABBV", "LLY"],
     # ── EVs ──────────────────────────────────────────────────────────────────
     "TSLA": ["RIVN", "LCID",  "F",    "GM",   "NIO"],
     # ── Streaming ────────────────────────────────────────────────────────────
@@ -138,6 +139,16 @@ _TICKER_PEERS: dict[str, list[str]] = {
     "WMT":  ["COST", "TGT",   "AMZN", "KR",   "DG"],
     "COST": ["WMT",  "TGT",   "BJ",   "AMZN", "KR"],
     "TGT":  ["WMT",  "COST",  "KSS",  "M",    "DG"],
+    # ── Railway / transportation equipment ───────────────────────────────────
+    "WAB":  ["HON",  "ROP",   "TT",   "OTIS", "CARR"],
+    # ── Prestige beauty / cosmetics ──────────────────────────────────────────
+    "EL":   ["COTY", "PG",    "CHD",  "IPAR", "ELF"],
+    # ── Fitness / wellness clubs ─────────────────────────────────────────────
+    "PLNT": ["LTH",  "XPOF",  "PTON", "LULU", "NKE"],
+    # ── Immuno-oncology / cell therapy biotech ────────────────────────────────
+    "IBRX": ["EXEL", "RCUS",  "NKTR", "IMVT", "ALKS"],
+    # ── GPU cloud / AI infrastructure ────────────────────────────────────────
+    "CRWV": ["AMZN", "MSFT",  "GOOGL","NET",  "SNOW"],
 }
 
 # ── Sector-level peer universe (tier 3) ────────────────────────────────────────
@@ -979,14 +990,32 @@ def _build_candidate_pool(
             print(f"  [PEER] {target_ticker}: tier-2 screener failed ({exc})")
     _add(tier2, 2)
 
-    # Tiers 3 and 4 (sector universe + global fallback) are REMOVED.
-    # PeerSelectionEngine is the sole source of peers. If tiers 0–2 produce
-    # no usable candidates the section reports "No valid peers available" —
-    # sector or global fallback tickers are never substituted.
+    # Tier 2b: sector-only screener fallback — fires only when tiers 0–2 all
+    # return 0 candidates.  Industry filter is dropped; sector constraint is
+    # kept so peers stay economically relevant.  PeerSelectionEngine then
+    # applies archetype / structural filters as usual.
+    tier2b: list[str] = []
+    if not pool and sector:
+        min_cap = (target_mkt_cap * screener_lo) if target_mkt_cap else None
+        max_cap = (target_mkt_cap * screener_hi) if target_mkt_cap else None
+        try:
+            raw = fmp.get_screener(
+                sector=sector, industry=None,
+                min_mkt_cap=min_cap, max_mkt_cap=max_cap, limit=20,
+            )
+            tier2b = raw
+            print(
+                f"  [PEER] {target_ticker}: tier-2b sector-only screener "
+                f"({sector}, band {screener_lo:.2f}x–{screener_hi:.1f}x)"
+                f" → {len(tier2b)} candidates"
+            )
+        except Exception as exc:
+            print(f"  [PEER] {target_ticker}: tier-2b screener failed ({exc})")
+        _add(tier2b, 2)
 
     print(
         f"  [PEER] {target_ticker}: total pool={len(pool)} "
-        f"(t0={len(tier0)} t1={len(tier1)} t2={len(tier2)}) "
+        f"(t0={len(tier0)} t1={len(tier1)} t2={len(tier2)} t2b={len(tier2b)}) "
         f"| sector={sector!r} industry={industry!r}"
     )
     return pool

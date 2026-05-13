@@ -101,6 +101,13 @@ class TrendResult:
     # Confidence penalty — subtracted from NormalizedMetrics confidence (0–1 scale)
     confidence_penalty:   float = 0.0
 
+    # ── Trend window disagreement metadata ────────────────────────────────────
+    # Set when the full-window op-margin trend and the recent-3Y trend disagree.
+    # When they disagree, the recent 3Y window is used for valuation_margin_adj.
+    op_margin_window_disagree: bool = False
+    op_margin_full_trend:      str  = ""
+    op_margin_recent_trend:    str  = ""
+
 
 def _margin_series(stmts, numerator_attr: str) -> list[float]:
     """Extract margin values (as decimals) from income statements, newest first."""
@@ -145,10 +152,26 @@ def detect_trends(stock_data: "StockData") -> TrendResult:
 
     # ── Classify each metric ──────────────────────────────────────────────────
     rev_g_label,  rev_g_sig  = classify_trend(rev_g_series)
-    op_mg_label,  op_mg_sig  = classify_trend(op_mg_series)
     net_mg_label, net_mg_sig = classify_trend(net_mg_series)
     roe_label,    roe_sig    = classify_trend(roe_series)
     roic_label,   roic_sig   = classify_trend(roic_series)
+
+    # Op margin: compute full-window AND recent-3Y window.
+    # When they disagree (e.g. long-run down but recent recovering), prefer the
+    # recent window for the valuation adjustment — it reflects current direction.
+    op_mg_full_label,   op_mg_sig   = classify_trend(op_mg_series)
+    op_mg_recent_label, _           = classify_trend(op_mg_series[:3])  # newest 3 years
+    _op_mg_window_disagree = (
+        len(op_mg_series) >= 4          # only relevant when full window is longer
+        and op_mg_full_label != op_mg_recent_label
+    )
+    op_mg_label = op_mg_recent_label if _op_mg_window_disagree else op_mg_full_label
+    op_mg_sig   = _SIGNAL[op_mg_label]
+    if _op_mg_window_disagree:
+        print(
+            f"  [TREND:window_disagree] op_margin full={op_mg_full_label} "
+            f"recent={op_mg_recent_label} → using recent"
+        )
 
     # ── Score adjustments ─────────────────────────────────────────────────────
     # Growth score adjustment from revenue growth trend
@@ -212,4 +235,7 @@ def detect_trends(stock_data: "StockData") -> TrendResult:
         valuation_margin_adj = valuation_margin_adj,
         valuation_rev_adj    = valuation_rev_adj,
         confidence_penalty   = confidence_penalty,
+        op_margin_window_disagree = _op_mg_window_disagree,
+        op_margin_full_trend      = op_mg_full_label,
+        op_margin_recent_trend    = op_mg_recent_label,
     )

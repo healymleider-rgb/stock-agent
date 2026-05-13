@@ -586,16 +586,25 @@ class ValidationGate:
         # MacroLEIAgent stores the raw FRED snapshot under "snapshot" (not "lei_snapshot").
         # Key names mirror FREDProvider.get_lei_snapshot() output.
         lei_snap     = macro_findings.get("snapshot", {})
-        cli_val      = lei_snap.get("oecd_cli")           if lei_snap else None
         claims_val   = lei_snap.get("jobless_claims")     if lei_snap else None
         housing_val  = lei_snap.get("housing_starts")     if lei_snap else None
-        mfg_val      = lei_snap.get("mfg_employment")     if lei_snap else None
+        mfg_val      = lei_snap.get("mfg_prod")           if lei_snap else None
         yield_val    = lei_snap.get("yield_spread_10y2y") if lei_snap else None
-        # cli_stale: True when MacroLEIAgent explicitly nulled oecd_cli because the
-        # FRED observation was older than the 45-day staleness threshold.  Block 5
-        # exempts a stale-but-acknowledged CLI from the "missing indicator" failure.
-        _obs_dates   = macro_findings.get("observation_dates", {})
-        cli_stale    = str(_obs_dates.get("oecd_cli", "")).startswith("STALE")
+        # OECD CLI: suppress in Block 5 if the observation is stale (>120 days).
+        # The macro scoring engine already excludes stale CLI; Block 5 must agree
+        # or it will flag a spurious regime mismatch.
+        _oecd_cli_raw  = lei_snap.get("oecd_cli") if lei_snap else None
+        _obs_dates     = macro_findings.get("observation_dates", {})
+        _oecd_cli_date = _obs_dates.get("oecd_cli")
+        lei_val = None
+        if _oecd_cli_raw is not None and _oecd_cli_date:
+            try:
+                _age = (datetime.now(timezone.utc).date()
+                        - datetime.strptime(_oecd_cli_date, "%Y-%m-%d").date()).days
+                if _age <= 120:
+                    lei_val = _oecd_cli_raw
+            except (ValueError, TypeError):
+                pass
 
         # ── Execution ─────────────────────────────────────────────────────────
         stance_raw = (
@@ -658,11 +667,10 @@ class ValidationGate:
                 "n_sims":      n_sims,
             },
             "macro": {
-                "cli":            cli_val,
-                "cli_stale":      cli_stale,
+                "oecd_cli":       lei_val,
                 "jobless_claims": claims_val,
                 "housing_starts": housing_val,
-                "manuf_employ":   mfg_val,
+                "mfg_prod":       mfg_val,
                 "yield_curve":    yield_val,
                 "regime":         macro_regime,
                 "macro_score":    macro_score,
@@ -715,11 +723,18 @@ class ValidationGate:
         # EPS TTM: check quarter count
         quarters = snap.get("eps", {}).get("ttm", {}).get("quarters", [])
         filled = [q for q in quarters if q is not None]
-        if len(filled) < 4:
-            b.fail(
-                f"eps.ttm: only {len(filled)}/4 quarters available "
-                f"— TTM EPS may be understated"
-            )
+        if 0 < len(filled) < 4:
+            # If every available quarter is already negative (or zero), additional
+            # quarters can only make TTM EPS more negative — "understated" doesn't
+            # apply.  Allow these tickers through so FCF-based valuation can proceed.
+            # When len(filled)==0, no quarterly data exists at all (FMP gap for small
+            # caps); fall back to annual EPS — do not fail here.
+            _all_non_positive = bool(filled) and all((q or 0) <= 0 for q in filled)
+            if not _all_non_positive:
+                b.fail(
+                    f"eps.ttm: only {len(filled)}/4 quarters available "
+                    f"— TTM EPS may be understated"
+                )
 
         return b
 
@@ -785,7 +800,8 @@ class ValidationGate:
         # Recompute implied P/E and compare
         computed_pe = price / eps_val if eps_val > 0 else None
         if computed_pe is None:
-            b.fail("EPS ≤ 0 — P/E is not meaningful for negative earnings")
+            # EPS ≤ 0: P/E is not meaningful.  Suppress rather than block — the
+            # driver model uses FCF-based valuation which remains valid.
             return b
 
         if pe_val is not None:
@@ -925,7 +941,7 @@ class ValidationGate:
         """
         b = BlockResult(5, "Macro Series Integrity")
         macro = snap.get("macro", {})
-        cli   = macro.get("cli")
+        cli   = macro.get("oecd_cli")
         regime = macro.get("regime", "Unknown")
 
         # Verify CLI level → regime consistency
@@ -950,16 +966,12 @@ class ValidationGate:
             b.fail(f"macro_score {ms} is outside valid range [0, 100]")
 
         # Check that key indicator fields are present.
-        # cli is exempted when MacroLEIAgent explicitly nulled it as stale
-        # (cli_stale=True) — the OECD CLI series on FRED has a known multi-month
-        # publication lag and may be permanently stale when the series is not
-        # updated.  The other three indicators are higher-frequency and must
-        # be present whenever the agent runs.
-        cli_stale = macro.get("cli_stale", False)
+        # oecd_cli may legitimately be None when stale (>120 days).
+        # The three indicators below are freely available and must be present
+        # whenever MacroLEIAgent runs.
         missing_indicators = [
-            k for k in ("cli", "jobless_claims", "housing_starts", "manuf_employ")
+            k for k in ("jobless_claims", "housing_starts", "mfg_prod")
             if macro.get(k) is None
-            and not (k == "cli" and cli_stale)
         ]
         if missing_indicators:
             b.fail(

@@ -224,6 +224,35 @@ class ValuationRange:
     quality_gross_margin: Optional[float] = field(default=None)
     quality_op_margin:    Optional[float] = field(default=None)
 
+    # ── Exit multiple cap metadata ────────────────────────────────────────────
+    # Populated when the 60x cap binds so the report can surface a note.
+    exit_mult_raw:            Optional[float] = None   # raw EV/FCF or P/E-implied
+    exit_mult_capped:         bool            = False   # True when raw > 60x
+    exit_mult_market_implied: Optional[float] = None   # actual market EV/FCF
+    exit_mult_cap_divergence: float           = 0.0    # (raw - 60) / 60 when capped
+
+    # ── FCF conversion normalisation metadata ────────────────────────────────
+    # Populated when TTM FCF/EBIT is anomalously low vs 5Y median.
+    fcf_conv_normalized:   bool           = False
+    fcf_conv_ttm:          Optional[float] = None   # raw TTM ratio
+    fcf_conv_5y_median:    Optional[float] = None   # 5Y historical median
+
+    # ── Trend window disagreement metadata ────────────────────────────────────
+    # Populated when full-window and recent-3Y op-margin trends disagree.
+    op_margin_window_disagree:  bool = False
+    op_margin_full_trend:       str  = ""
+    op_margin_recent_trend:     str  = ""
+
+    # ── Driver vs consensus divergence ────────────────────────────────────────
+    driver_consensus_divergence_pct:    float = 0.0
+    driver_consensus_divergence_severe: bool  = False
+
+    # ── Bank net-debt override ────────────────────────────────────────────────
+    bank_net_debt_skipped: bool = False  # True when FMP deposits inflated net_debt
+
+    # ── Bear price fallback ───────────────────────────────────────────────────
+    bear_price_source: str = "driver"   # "ev_ratio_fallback" when leverage zeroed bear
+
     # ── Monte Carlo simulation results ────────────────────────────────────────
     # Populated by compute_valuation_range() after the deterministic scenarios
     # are finalised.  None when inputs are insufficient (negative EPS, no price).
@@ -428,7 +457,7 @@ def _ev_fcf_multiple(
     net_debt: float,
     ttm_fcf: Optional[float],
     pe_ratio: Optional[float],
-) -> float:
+) -> tuple[float, dict]:
     """
     Derive EV/FCF exit multiple (primary), with P/E-based fallback.
 
@@ -436,14 +465,45 @@ def _ev_fcf_multiple(
     1. EV / TTM FCF when TTM FCF > 0
     2. P/E ÷ 0.75  — assumes ~75 % FCF/earnings conversion rate
     3. 18× default — broad-market median for quality businesses
+
+    Returns (capped_multiple, metadata_dict) where metadata captures
+    whether the 60x ceiling bound and what the raw value was.
     """
+    _CAP = 60.0
+    market_implied: Optional[float] = None
     if market_cap and ttm_fcf and ttm_fcf > 0:
         ev = market_cap + net_debt
-        mult = ev / ttm_fcf
-        return max(5.0, min(60.0, mult))
+        market_implied = ev / ttm_fcf
+        raw = market_implied
+        capped = max(5.0, min(_CAP, raw))
+        bound = raw > _CAP
+        meta = {
+            "exit_multiple_raw": round(raw, 1),
+            "exit_multiple_used": round(capped, 1),
+            "exit_multiple_capped": bound,
+            "market_implied_multiple": round(market_implied, 1),
+            "cap_divergence_pct": round((raw - _CAP) / _CAP, 3) if bound else 0.0,
+        }
+        return capped, meta
     if pe_ratio and pe_ratio > 0:
-        return max(5.0, min(60.0, pe_ratio / 0.75))
-    return 18.0
+        raw = pe_ratio / 0.75
+        capped = max(5.0, min(_CAP, raw))
+        bound = raw > _CAP
+        meta = {
+            "exit_multiple_raw": round(raw, 1),
+            "exit_multiple_used": round(capped, 1),
+            "exit_multiple_capped": bound,
+            "market_implied_multiple": None,
+            "cap_divergence_pct": round((raw - _CAP) / _CAP, 3) if bound else 0.0,
+        }
+        return capped, meta
+    return 18.0, {
+        "exit_multiple_raw": 18.0,
+        "exit_multiple_used": 18.0,
+        "exit_multiple_capped": False,
+        "market_implied_multiple": None,
+        "cap_divergence_pct": 0.0,
+    }
 
 
 def _driver_scenario_price(
@@ -1076,18 +1136,82 @@ def compute_valuation_range(
     )
     # FCF conversion ratio derived from the SSOT FCF value — never re-reads raw
     _op_income_for_fcf = income.operating_income if income else None
-    _fcf_conv_base: float = (
+    _fcf_conv_ttm: Optional[float] = (
         max(0.30, min(0.98, _ttm_fcf_abs / _op_income_for_fcf))
         if (_ttm_fcf_abs is not None
             and _op_income_for_fcf is not None and _op_income_for_fcf > 0)
         else None
-    ) or 0.75
+    )
+
+    # ── 5Y median FCF conversion — detect anomalously depressed TTM ───────────
+    # When the business is in a peak-capex or M&A-integration phase, TTM FCF/EBIT
+    # understates steady-state conversion.  If TTM < 70% of the 5Y median, use
+    # the median for base (steady-state expectation) and TTM for bear (trough).
+    _fcf_conv_hist: list[float] = []
+    _hist_stmts = stock_data.income_statements or []
+    _hist_cfs   = stock_data.cash_flows        or []
+    for _i in range(min(len(_hist_stmts), len(_hist_cfs), 5)):
+        _h_oi  = getattr(_hist_stmts[_i], "operating_income", None)
+        _h_fcf = getattr(_hist_cfs[_i],   "free_cash_flow",   None)
+        if _h_oi and _h_oi > 0 and _h_fcf is not None:
+            _fcf_conv_hist.append(max(0.30, min(0.98, _h_fcf / _h_oi)))
+
+    _fcf_conv_5y_med: Optional[float] = None
+    if len(_fcf_conv_hist) >= 3:
+        _sorted = sorted(_fcf_conv_hist)
+        _n = len(_sorted)
+        _fcf_conv_5y_med = (
+            (_sorted[_n // 2 - 1] + _sorted[_n // 2]) / 2 if _n % 2 == 0
+            else _sorted[_n // 2]
+        )
+
+    _fcf_conv_normalized = False
+    if (
+        _fcf_conv_ttm is not None
+        and _fcf_conv_5y_med is not None
+        and _fcf_conv_ttm < 0.70 * _fcf_conv_5y_med
+    ):
+        _fcf_conv_normalized = True
+        print(
+            f"  [FCF_NORM] TTM fcf_conv={_fcf_conv_ttm:.3f} < 70% of 5Y median "
+            f"({_fcf_conv_5y_med:.3f}) — base normalised to median"
+        )
+
+    _fcf_conv_base: float = (
+        _fcf_conv_5y_med if _fcf_conv_normalized
+        else (_fcf_conv_ttm if _fcf_conv_ttm is not None else 0.75)
+    )
+
+    # Store FCF conversion metadata on vr
+    vr.fcf_conv_ttm        = _fcf_conv_ttm
+    vr.fcf_conv_5y_median  = _fcf_conv_5y_med
+    vr.fcf_conv_normalized = _fcf_conv_normalized
 
     _net_debt: float = 0.0
+    _is_bank = False
     if balance:
-        _net_debt = (balance.total_debt or 0.0) - (balance.cash_and_equivalents or 0.0)
+        _raw_net_debt = (balance.total_debt or 0.0) - (balance.cash_and_equivalents or 0.0)
+        # Banks include customer deposits in total_debt via FMP, making net_debt
+        # orders-of-magnitude larger than the business's actual financial leverage.
+        # Skip net_debt subtraction for banks — equity = EV proxy (EV/FCF × FCF).
+        _profile = getattr(stock_data, "profile", None)
+        _sector   = (getattr(_profile, "sector",   "") or "").lower()
+        _industry = (getattr(_profile, "industry", "") or "").lower()
+        _is_bank = (
+            "financial" in _sector
+            and any(k in _industry for k in ("bank", "savings", "thrift", "credit union", "lending"))
+        )
+        if _is_bank:
+            _net_debt = 0.0
+            vr.bank_net_debt_skipped = True
+            print(
+                f"  [DRIVER] bank sector detected ({_profile.sector!r} / {_profile.industry!r})"
+                f" — skipping net_debt subtraction (deposits misclassified as debt by FMP)"
+            )
+        else:
+            _net_debt = _raw_net_debt
 
-    _exit_mult_base = _ev_fcf_multiple(market_cap, _net_debt, _ttm_fcf_abs, pe)
+    _exit_mult_base, _exit_mult_meta = _ev_fcf_multiple(market_cap, _net_debt, _ttm_fcf_abs, pe)
 
     _driver_ok = (
         _ttm_rev is not None and _ttm_rev > 0
@@ -1149,6 +1273,11 @@ def compute_valuation_range(
             vr.trend_rev_adj      = _trend_rev_adj
             vr.trend_impact_lines = _trend_impact_lines
 
+            # Store trend window metadata for report rendering
+            vr.op_margin_window_disagree = getattr(trends, "op_margin_window_disagree", False)
+            vr.op_margin_full_trend      = getattr(trends, "op_margin_full_trend",      "")
+            vr.op_margin_recent_trend    = getattr(trends, "op_margin_recent_trend",    "")
+
             print(
                 f"  [TREND→VAL] margin_adj={_trend_margin_adj*100:+.0f}pp"
                 f" rev_adj={_trend_rev_adj*100:+.0f}pp"
@@ -1192,11 +1321,18 @@ def compute_valuation_range(
 
         # FCF conversion: bear −10pp, bull +5pp; clamp to [0.30, 0.95]
         # Rescale bear/bull proportionally when guidance changed the base.
+        # When FCF was normalised (TTM was anomalously low), bear uses the
+        # TTM trough so the bear scenario reflects the worst-case capex reality.
         if _fcf_guidance_used and _fcf_conv_base > 0:
             _scale = _fcf_conv_adj / _fcf_conv_base
             _bear_fcf = max(0.30, min(0.95, (max(0.30, _fcf_conv_base - 0.10)) * _scale))
             _base_fcf = _fcf_conv_adj
             _bull_fcf = max(0.30, min(0.95, (min(0.95, _fcf_conv_base + 0.05)) * _scale))
+        elif _fcf_conv_normalized and _fcf_conv_ttm is not None:
+            # Bear uses TTM (trough); base uses 5Y median; bull = median + 10pp recovery
+            _bear_fcf = max(0.30, _fcf_conv_ttm)
+            _base_fcf = _fcf_conv_base
+            _bull_fcf = min(0.95, _fcf_conv_base + 0.10)
         else:
             _bear_fcf = max(0.30, _fcf_conv_base - 0.10)
             _base_fcf = _fcf_conv_base
@@ -1220,6 +1356,38 @@ def compute_valuation_range(
             _ttm_rev, _bull_rev_g, _bull_op_mg, _bull_fcf,
             _bull_exit, shares, _net_debt, price_cap,
         )
+
+        # ── Fix B: bear-price fallback when structural leverage zeroes it out ───
+        # When net_debt > bear EV (highly-leveraged companies like cable operators),
+        # max(0, ...) clamps bear to $0, making _scenario_derived_mc unusable.
+        # Fallback: express bear as a fraction of base using the EV ratio so the
+        # downside still reflects the scenario inputs rather than being literal $0.
+        if _drv_bear_px == 0.0 and _drv_base_px > 0.0:
+            _bear_ev = _drv_bear_fcf * _bear_exit
+            _base_ev = _drv_base_fcf * _base_exit
+            if _base_ev > 0:
+                _drv_bear_px = round(_drv_base_px * (_bear_ev / _base_ev), 2)
+                vr.bear_price_source = "ev_ratio_fallback"
+                print(
+                    f"  [DRIVER] bear_px=0 (structural leverage: net_debt=${_net_debt/1e9:.1f}B > bear_EV=${_bear_ev/1e9:.1f}B)"
+                    f" — EV-ratio fallback: bear=${_drv_bear_px}"
+                )
+
+        # ── Monotonicity enforcement: ensure bear ≤ base ≤ bull ─────────────
+        # price_cap can compress bull to == base (or rarely base > bull due to
+        # rounding after cap).  This makes _scenario_derived_mc produce an
+        # inverted distribution (P70 > P95).  Clamp to preserve base as anchor.
+        if _drv_bull_px < _drv_base_px:
+            _drv_bull_px = _drv_base_px
+            print(
+                f"  [DRIVER] bull_px ({_drv_bull_px}) < base_px ({_drv_base_px})"
+                f" — clamped to base (price_cap compression)"
+            )
+        if _drv_bear_px > _drv_base_px and _drv_base_px > 0:
+            _drv_bear_px = _drv_base_px
+            print(
+                f"  [DRIVER] bear_px > base_px — clamped to base"
+            )
 
         # ── Attribution labels — what changed per scenario ───────────────────
         _mg_bear_delta = (_cur_op_mg - _bear_op_mg) * 100
@@ -1283,6 +1451,13 @@ def compute_valuation_range(
         print(
             f"  [DRIVER] bear={_drv_bear_px} base={_drv_base_px} bull={_drv_bull_px}"
         )
+
+        # Store exit multiple cap metadata — only when driver model ran so the
+        # note is only shown when the cap actually affected a reported output.
+        vr.exit_mult_raw            = _exit_mult_meta.get("exit_multiple_raw")
+        vr.exit_mult_capped         = _exit_mult_meta.get("exit_multiple_capped", False)
+        vr.exit_mult_market_implied = _exit_mult_meta.get("market_implied_multiple")
+        vr.exit_mult_cap_divergence = _exit_mult_meta.get("cap_divergence_pct", 0.0)
     else:
         _driver_skip_reasons = []
         if not _ttm_rev or _ttm_rev <= 0:

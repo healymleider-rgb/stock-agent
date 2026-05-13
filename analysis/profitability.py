@@ -101,13 +101,21 @@ def score_profitability(
         if net_margin is None and income and income.net_income and income.revenue and income.revenue > 0:
             net_margin = income.net_income / income.revenue
 
-    # ROE
-    if metrics is not None and metrics.roe is not None:
-        roe: Optional[float] = metrics.roe
+    # ROE — skip entirely when equity is negative/tiny (metrics flag set in compute_core_metrics)
+    roe_nm = getattr(metrics, "roe_not_meaningful", False)
+    if roe_nm:
+        roe: Optional[float] = None
+    elif metrics is not None and metrics.roe is not None:
+        roe = metrics.roe
     else:
         roe = ratios.roe if ratios else None
-        if roe is None and income and income.net_income and balance and balance.total_equity and balance.total_equity > 0:
-            roe = income.net_income / balance.total_equity
+        # Guard: only derive if equity is meaningfully positive (same rule as metrics.py)
+        if roe is None and income and income.net_income and balance:
+            eq = balance.total_equity
+            ta = balance.total_assets
+            eq_ok = eq is not None and eq > 0 and (ta is None or ta <= 0 or eq >= 0.05 * ta)
+            if eq_ok:
+                roe = income.net_income / balance.total_equity
 
     # ROA — sourced from NormalizedMetrics; no raw derivation (not critical enough)
     roa: Optional[float] = (metrics.roa if metrics is not None else None) or (ratios.roa if ratios else None)
@@ -138,7 +146,10 @@ def score_profitability(
     sub_scores.append((nm_s, 0.20))
     factors.append(nm_f)
 
-    roe_s, roe_f = _return_score(roe, "ROE")
+    if roe_nm:
+        roe_s, roe_f = 50.0, "ROE: — (negative/tiny equity base; metric not meaningful)"
+    else:
+        roe_s, roe_f = _return_score(roe, "ROE")
     sub_scores.append((roe_s, 0.20))
     factors.append(roe_f)
 

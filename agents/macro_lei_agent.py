@@ -30,11 +30,15 @@ Availability
 """
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from analysis.macro_overlay import score as overlay_score
 from agents.base_agent import BaseAgent
-from api.fred_provider import FREDProvider, StaleMacroError
+from api.fred_provider import FREDProvider
 from models.message import AgentMessage, MessageType
 from utils.logger import logger
+
+_STALENESS_WARN_DAYS = 60  # warn if any indicator observation is older than this
 
 
 class MacroLEIAgent(BaseAgent):
@@ -57,46 +61,44 @@ class MacroLEIAgent(BaseAgent):
             )
             return self._neutral_response(message)
 
-        # Fetch all tracked indicators in one round-trip bundle.
-        # StaleMacroError is raised when the OECD CLI observation is older than
-        # the staleness threshold (45 days).  The exception carries the full
-        # snapshot in exc.snapshot so we can null out just the stale indicator
-        # and continue with a degraded (CLI=None) overlay rather than failing.
         print(f"  [MacroLEI] Fetching LEI snapshot from FRED ...")
-        _stale_cli_warning: str = ""
-        try:
-            snapshot = self._fred.get_lei_snapshot()
-        except StaleMacroError as _e:
-            _stale_cli_warning = str(_e)
-            logger.warning("MacroLEIAgent: stale OECD CLI — %s", _stale_cli_warning)
-            print(
-                "  [MacroLEI] *** STALE CLI — excluding oecd_cli from scoring, "
-                "continuing with degraded macro overlay ***"
-            )
-            snapshot = _e.snapshot                # full snapshot attached by FREDProvider
-            snapshot["oecd_cli"]        = None    # strip the stale value
-            snapshot["oecd_cli_trend"]  = None    # trend is also unreliable
-            # Patch observation_dates so display shows the staleness note
-            _od = snapshot.get("_observation_dates", {})
-            _od["oecd_cli"] = f"STALE ({_stale_cli_warning[:80]}...)"
-            snapshot["_observation_dates"] = _od
-
-        # Extract observation dates (injected by FREDProvider.get_lei_snapshot)
-        obs_dates: dict = snapshot.pop("_observation_dates", {})
+        snapshot = self._fred.get_lei_snapshot()
 
         # Log what we got — include observation date so staleness is visible
-        data_keys = [k for k in snapshot if not k.startswith("_")]
+        _snap_obs = snapshot.get("_observation_dates", {})
+        data_keys = [k for k in snapshot if not k.startswith("_") and "_trend" not in k]
         available = sum(1 for k in data_keys if snapshot[k] is not None)
         total     = len(data_keys)
         print(f"  [MacroLEI] FRED snapshot — {available}/{total} indicators available:")
         for k in data_keys:
             v    = snapshot[k]
-            d    = obs_dates.get(k, "?")
+            d    = _snap_obs.get(k, "?")
             vstr = f"{v:.4f}" if isinstance(v, float) else "N/A"
             print(f"    {k}: {vstr}  (obs date: {d})")
 
-        # Score using the rule-based overlay (overlay_score only uses numeric keys)
+        # Warn if any indicator observation is stale (single combined message)
+        stale_indicators: list[str] = []
+        today = date.today()
+        for k, obs_date_str in _snap_obs.items():
+            if obs_date_str is None or snapshot.get(k) is None:
+                continue
+            try:
+                obs_dt   = datetime.strptime(obs_date_str, "%Y-%m-%d").date()
+                days_old = (today - obs_dt).days
+                if days_old > _STALENESS_WARN_DAYS:
+                    stale_indicators.append(f"{k} ({days_old}d old)")
+            except (ValueError, TypeError):
+                pass
+        if stale_indicators:
+            stale_msg = "Macro indicators stale: " + ", ".join(stale_indicators)
+            logger.warning("MacroLEIAgent: %s", stale_msg)
+            print(f"  [MacroLEI] *** {stale_msg} ***")
+
+        # Score using the rule-based overlay — _observation_dates must still be in snapshot
         assessment = overlay_score(snapshot)
+
+        # Pop observation dates AFTER scoring so score() could read them for staleness
+        obs_dates: dict = snapshot.pop("_observation_dates", {})
 
         print(
             f"  [MacroLEI] Regime={assessment.macro_regime}  "
@@ -122,8 +124,9 @@ class MacroLEIAgent(BaseAgent):
             "yield_spread_trend":     assessment.yield_spread_trend,
             # Traceability
             "confidence_adjustment_rationale": assessment.confidence_adjustment_rationale,
-            # Actual level values for display (not just trend direction)
-            "cli_level":              snapshot.get("oecd_cli"),
+            # Actual level values for display
+            "oecd_cli_level":         snapshot.get("oecd_cli"),
+            "mfg_prod_level":         snapshot.get("mfg_prod"),
             "yield_curve_level":      snapshot.get("yield_spread_10y2y"),
             "snapshot":               snapshot,
             "observation_dates":      obs_dates,

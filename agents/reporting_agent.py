@@ -333,7 +333,34 @@ class ReportingAgent(BaseAgent):
         ]
 
         lines += _header_metrics
-        _outlook, _action, _action_why = self._derive_outlook_action(sc, price, val_range)
+
+        # Sizing must be computed before ACTION derivation so that a 0% final
+        # size can veto a BUY/STAGED BUY zone signal and return WAIT instead.
+        _beta = getattr(stock_data.profile, "beta", None) if stock_data and stock_data.profile else None
+        # Re-derive reliability from live price_history (NormalizedMetrics was computed
+        # before price_history was fetched, so its beta_months may be 0).
+        _ph_closes    = getattr(getattr(stock_data, "price_history", None), "closes", []) or []
+        _ph_months    = int(len(_ph_closes) / 21)
+        _beta_reliable = (
+            _ph_months >= 24
+            and (_beta is None or abs(_beta) <= 5.0)
+        ) if _ph_closes else getattr(norm_metrics, "beta_reliable", True)
+        _validation_for_sizing = findings.get("fundamental", {}).get("validation")
+        self._build_position_sizing_section._scenario_tree_ref    = _scenario_tree
+        self._build_position_sizing_section._divergence_label_ref = _alpha_divergence_label
+        self._build_position_sizing_section._validation_ref       = _validation_for_sizing
+        _ps_lines, _ps_data = self._build_position_sizing_section(
+            sc, macro_findings, beta=_beta, beta_reliable=_beta_reliable,
+            pe_val=pe_val, val_range=val_range, price=price,
+            factor_profile=_factor_profile,
+        )
+        self._build_position_sizing_section._scenario_tree_ref    = None
+        self._build_position_sizing_section._divergence_label_ref = None
+        self._build_position_sizing_section._validation_ref       = None
+        sc.position_sizing = _ps_data
+        _final_size = float(_ps_data.get("position_size", -1))
+
+        _outlook, _action, _action_why = self._derive_outlook_action(sc, price, val_range, final_size=_final_size)
         _action_detail = ""
         if _action == "BUY":
             _action_detail = " (price below P25 fair value — strong entry zone)"
@@ -344,7 +371,12 @@ class ReportingAgent(BaseAgent):
         elif _action == "SELL":
             _action_detail = " (thesis broken or price far above fair value)"
         elif _action == "WAIT":
-            _action_detail = " (bullish thesis; price above fair value — await pullback)"
+            if _final_size == 0.0:
+                _action_detail = " (risk/return metrics do not support entry at current price)"
+            elif "Bullish" in _outlook:
+                _action_detail = " (bullish thesis; price at or above fair value — await pullback)"
+            else:
+                _action_detail = " (price at or above fair value — no favorable entry signal)"
 
         _action_block: list[str] = [
             "─" * 68,
@@ -711,6 +743,7 @@ class ReportingAgent(BaseAgent):
             ps        = ps_val,
             ev_ebitda = ev_val,
             price     = price,
+            action    = _action,
         )
         _memo_result = _memo_engine.build(_memo_input)
 
@@ -721,6 +754,13 @@ class ReportingAgent(BaseAgent):
         # peer_cmp may be None when the peer engine returned no result — section
         # A (peer filtering) is skipped in that case; B and C always run.
         self._enforce_report_sections(_memo_result, peer_cmp)
+
+        # Cache finalized peer_cmp in findings so web_api._extract_peer_comparison
+        # can reuse it instead of making a second build_peer_comparison FMP call.
+        # findings IS state.agent_findings (by reference from orchestrator), so
+        # web_api.py sees this value without any extra plumbing.
+        if peer_cmp is not None:
+            findings["peer_comparison"] = peer_cmp
 
         # Lock the memo — no further field mutations are permitted after this point.
         _memo_result.lock()
@@ -736,24 +776,6 @@ class ReportingAgent(BaseAgent):
 
         print(f"  [MEMO] word_count={_memo_result.word_count} | locked — no post-render appending")
 
-        _beta = getattr(stock_data.profile, "beta", None) if stock_data and stock_data.profile else None
-        # Inject scenario tree reference so Step 4e gates can access it.
-        # The static method cannot take it as a direct parameter without a
-        # signature change that touches all callers; function-attribute injection
-        # is the least-invasive bridge across the scope boundary.
-        _validation_for_sizing = findings.get("fundamental", {}).get("validation")
-        self._build_position_sizing_section._scenario_tree_ref    = _scenario_tree
-        self._build_position_sizing_section._divergence_label_ref = _alpha_divergence_label
-        self._build_position_sizing_section._validation_ref       = _validation_for_sizing
-        _ps_lines, _ps_data = self._build_position_sizing_section(
-            sc, macro_findings, beta=_beta,
-            pe_val=pe_val, val_range=val_range, price=price,
-            factor_profile=_factor_profile,
-        )
-        self._build_position_sizing_section._scenario_tree_ref    = None   # clear after use
-        self._build_position_sizing_section._divergence_label_ref = None
-        self._build_position_sizing_section._validation_ref       = None
-        sc.position_sizing = _ps_data
         lines += _ps_lines
 
         # ── Data sources summary ───────────────────────────────────────────────
@@ -2080,6 +2102,68 @@ class ReportingAgent(BaseAgent):
                 )
                 lines.append("")
 
+        # ── FIX 1: Exit multiple cap note ─────────────────────────────────────
+        if getattr(vr, "exit_mult_capped", False):
+            _raw_m   = getattr(vr, "exit_mult_raw",            None)
+            _mkt_m   = getattr(vr, "exit_mult_market_implied", None)
+            _mkt_str = f"~{_mkt_m:.0f}x" if _mkt_m else "high"
+            _raw_str = f"{_raw_m:.0f}x" if _raw_m else "above 60x"
+            lines += [
+                f"    ⚠  Exit multiple capped: model used 60x (ceiling) vs"
+                f" market-implied {_mkt_str} EV/FCF.",
+                "       The 60x cap reflects a typical steady-state business.",
+                "       For high-growth or recovery names where the market prices in FCF",
+                "       normalization, this cap produces conservative bear/base prices.",
+                "       Consider analyst consensus and management FCF guidance alongside.",
+                "",
+            ]
+
+        # ── FIX 2: FCF conversion normalisation note ──────────────────────────
+        if getattr(vr, "fcf_conv_normalized", False):
+            _ttm_c = getattr(vr, "fcf_conv_ttm",       None)
+            _med_c = getattr(vr, "fcf_conv_5y_median",  None)
+            _ttm_s = f"{_ttm_c:.0%}" if _ttm_c else "—"
+            _med_s = f"{_med_c:.0%}" if _med_c else "—"
+            lines += [
+                f"    ⚠  FCF conversion normalized: TTM conversion ({_ttm_s}) is below"
+                f" 5Y median ({_med_s}).",
+                "       Base case uses the 5Y median to reflect steady-state expectations.",
+                "       Bear case uses the TTM trough (elevated capex / M&A integration).",
+                "       Bull case assumes recovery beyond median.",
+                "",
+            ]
+
+        # ── FIX 3: Trend window disagreement note ─────────────────────────────
+        if getattr(vr, "op_margin_window_disagree", False):
+            _full_t   = getattr(vr, "op_margin_full_trend",   "")
+            _recent_t = getattr(vr, "op_margin_recent_trend", "")
+            if _full_t and _recent_t:
+                lines += [
+                    f"    ℹ  Margin trend: full-window trend is {_full_t.lower()},"
+                    f" but recent 3-year trend is {_recent_t.lower()}.",
+                    "       Valuation uses the recent trend direction for the base-case margin.",
+                    "",
+                ]
+
+        # ── FIX 5: Driver vs analyst consensus divergence ─────────────────────
+        _drv_b_for_div = getattr(vr, "base_price", None)
+        if (
+            _drv_b_for_div is not None and _drv_b_for_div > 0
+            and analyst_target is not None and analyst_target > 0
+            and getattr(vr, "driver_model_available", False)
+        ):
+            _cons_div = abs(_drv_b_for_div - analyst_target) / analyst_target
+            if _cons_div >= 0.50:
+                lines += [
+                    f"    ⚠  Driver model base (${_drv_b_for_div:.0f}) diverges from"
+                    f" analyst consensus (${analyst_target:.0f}) by {_cons_div:.0%}.",
+                    "       Possible reasons: differing FCF normalisation assumptions,",
+                    "       forward EPS trajectory, or exit multiple expectations.",
+                    "       Treat driver model, consensus, and market price as three",
+                    "       independent data points — no single one is authoritative.",
+                    "",
+                ]
+
         # ── PEG ───────────────────────────────────────────────────────────────
         if vr.peg_ratio is not None:
             _pe_shown = vr.scenario_base_pe or vr.scenario_pe_multiple
@@ -2100,6 +2184,7 @@ class ReportingAgent(BaseAgent):
         sc: "Scorecard",
         macro: dict,
         beta: "float | None" = None,
+        beta_reliable: bool = True,
         pe_val: "float | None" = None,
         val_range: "ValuationRange | None" = None,
         price: "float | None" = None,
@@ -2364,8 +2449,8 @@ class ReportingAgent(BaseAgent):
                 hard_cap_reason = f"Capped due to {flag_count} active risk flags"
                 size_reduced = True
 
-        # High-beta shave — step down one increment
-        if beta is not None and beta > 1.5:
+        # High-beta shave — step down one increment (skip when beta is unreliable)
+        if beta_reliable and beta is not None and beta > 1.5:
             target = _step_down(target)
 
         # ── Step 4b: MC quality-adjusted tail caps ────────────────────────────
@@ -2895,9 +2980,15 @@ class ReportingAgent(BaseAgent):
                         f" — size constrained by tail risk, not lack of upside."
                     )
                 elif _p5_r2 < -0.25:
+                    if _er_r2 >= 0.10:
+                        _er_qual = "is attractive"
+                    elif _er_r2 >= 0.0:
+                        _er_qual = "is roughly neutral"
+                    else:
+                        _er_qual = "indicates poor immediate risk/reward"
                     rationale = (
-                        f"Expected return of {_er_r2:+.0%} is attractive, but a"
-                        f" {_p5_r2:.0%} downside tail (P5) justifies reduced allocation."
+                        f"Expected return of {_er_r2:+.0%} {_er_qual};"
+                        f" a {_p5_r2:.0%} downside tail (P5) justifies reduced allocation."
                     )
                 elif _er_r2 < 0.15:
                     rationale = (
@@ -2988,7 +3079,7 @@ class ReportingAgent(BaseAgent):
         lines = [
             "  Position Sizing Guidance",
             "  ────────────────────────",
-            f"    Position Size    : {pos_range}  ({base_rating})",
+            f"    Position Size    : {pos_range}",
             f"    Entry Strategy   : {entry_strategy}",
             f"    Rationale        : {rationale}",
         ]
@@ -3084,6 +3175,10 @@ class ReportingAgent(BaseAgent):
 
         # ── Computed P/E cross-check ─────────────────────────────────────────
         inc = stock_data.latest_income
+        _norm_m = (findings.get("fundamental") or {}).get("normalized_metrics")
+        _currency_mismatch = getattr(_norm_m, "currency_mismatch", False) if _norm_m else False
+        _fin_ccy = getattr(_norm_m, "financials_currency", "") if _norm_m else ""
+        _px_ccy  = getattr(_norm_m, "price_currency", "") if _norm_m else ""
         if price and inc:
             sh = (mc_api / price) if (mc_api and price > 0) else None
             eps = inc.eps_diluted or inc.eps
@@ -3093,8 +3188,17 @@ class ReportingAgent(BaseAgent):
             print(f"  [AUDIT] pe_computed            = {pe_computed}  (current_price/annual_eps)")
             if pe_computed and pe_displayed:
                 diff_pe = abs(pe_computed - pe_displayed) / pe_displayed * 100
-                flag = "  *** METHODOLOGY DIFF ***" if diff_pe > 15 else ""
-                print(f"  [AUDIT] pe_method diff         = {diff_pe:.1f}%{flag}")
+                if _currency_mismatch and diff_pe > 15:
+                    # Currency mismatch explains the divergence — price in _px_ccy, EPS in _fin_ccy.
+                    # This is an expected artifact, not a data quality issue.
+                    print(
+                        f"  [AUDIT] pe_method diff         = {diff_pe:.1f}%"
+                        f"  [suppressed: currency mismatch artifact"
+                        f" — income stmt in {_fin_ccy}, price in {_px_ccy}]"
+                    )
+                else:
+                    flag = "  *** METHODOLOGY DIFF ***" if diff_pe > 15 else ""
+                    print(f"  [AUDIT] pe_method diff         = {diff_pe:.1f}%{flag}")
 
         # ── Macro snapshot with dates ────────────────────────────────────────
         macro = findings.get("macro", {})
@@ -3609,6 +3713,7 @@ class ReportingAgent(BaseAgent):
         sc: "Scorecard",
         price: "float | None",
         val_range: "ValuationRange | None",
+        final_size: float = -1.0,
     ) -> "tuple[str, str, str | None]":
         """
         Return (outlook_label, action_label, why_str_or_None).
@@ -3617,6 +3722,11 @@ class ReportingAgent(BaseAgent):
         ACTION  — what to do right now, given current price vs fair value.
         WHY     — one-sentence explanation when OUTLOOK and ACTION diverge;
                   None when they are consistent (e.g. Bullish + BUY).
+
+        final_size: position size as a decimal (0.0 = no position). When 0.0,
+                    BUY/STAGED BUY/HOLD are vetoed in favour of WAIT so that
+                    the ACTION label matches what the position sizing section
+                    actually recommends.
         """
         from models.scorecard import Stance as _Stance
 
@@ -3669,11 +3779,22 @@ class ReportingAgent(BaseAgent):
         p50_str = f"${p50:.0f}" if p50 else "fair value"
         p25_str = f"~${p25:.0f}" if p25 else "below fair value"
 
+        _size_veto = (final_size >= 0.0 and final_size == 0.0)
+        _size_veto_why = (
+            "Long-term thesis intact, but risk/return metrics do not support "
+            "initiating a position now. Revisit if expected return improves "
+            "or downside tail narrows."
+        )
+
         # ── Bullish ──
         if stance == _Stance.BULLISH:
             if zone == "below_p25":
+                if _size_veto:
+                    return outlook, "WAIT", _size_veto_why
                 return outlook, "BUY", None
             if zone == "between_p25_p50":
+                if _size_veto:
+                    return outlook, "WAIT", _size_veto_why
                 return outlook, "STAGED BUY", None
             # above P50 or unknown — WAIT
             why = (
@@ -3691,6 +3812,8 @@ class ReportingAgent(BaseAgent):
             )
             return outlook, "WAIT", why
         if zone in ("below_p25", "between_p25_p50"):
+            if _size_veto:
+                return outlook, "WAIT", "Neutral thesis — risk/return metrics do not support entry."
             return outlook, "HOLD", None
         return outlook, "WAIT", "Neutral thesis — no clear entry signal from price zone."
 

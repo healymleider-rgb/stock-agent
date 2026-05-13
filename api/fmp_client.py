@@ -226,6 +226,7 @@ class FMPClient:
             website=raw.get("website", ""),
             ceo=raw.get("ceo", ""),
             ipo_date=raw.get("ipoDate", ""),
+            currency=(raw.get("currency") or "USD").strip().upper(),
         )
 
     def fetch_quote(self, symbol: str) -> dict[str, Any]:
@@ -276,6 +277,7 @@ class FMPClient:
                 selling_expenses=safe_float(raw.get("sellingGeneralAndAdministrativeExpenses")),
                 interest_expense=safe_float(raw.get("interestExpense")),
                 filing_date=raw.get("filingDate") or None,
+                reported_currency=(raw.get("reportedCurrency") or "USD").strip().upper(),
             ))
         return results
 
@@ -656,9 +658,16 @@ class FMPClient:
             return []
         if not data or not isinstance(data, list):
             return []
-        raw = data[0] if data else {}
-        peers = raw.get("peersList", [])
-        return [str(t) for t in peers if t and t != symbol]
+        first = data[0] if data else {}
+        # Legacy FMP API: [{peersList: ["AAPL", ...]}, ...]
+        # Stable FMP API: [{symbol: "AAPL", companyName: ..., price: ..., mktCap: ...}, ...]
+        if isinstance(first, dict) and "peersList" in first:
+            peers = first.get("peersList", [])
+            return [str(t) for t in peers if t and t != symbol]
+        return [
+            str(r["symbol"]) for r in data
+            if isinstance(r, dict) and r.get("symbol") and r["symbol"] != symbol
+        ]
 
     def fetch_shares_float(self, symbol: str) -> Optional[dict[str, Any]]:
         """

@@ -19,27 +19,30 @@ FRED API reference: https://fred.stlouisfed.org/docs/api/fred/
 Base URL: https://api.stlouisfed.org/fred
 Auth: ?api_key=<key>&file_type=json query parameters
 
-Supported indicators (initial set)
+Supported indicators
 -----------------------------------
 Series IDs are FRED's canonical identifiers.  Pass them directly to the generic
 methods, or use the named constants and convenience methods below.
 
-  Indicator                         FRED Series ID   Frequency
-  ─────────────────────────────────────────────────────────────
-  10-Year Treasury yield            GS10             Monthly
-  2-Year Treasury yield             GS2              Monthly
-  Yield curve spread (10Y-2Y)       T10Y2Y           Daily (FRED-computed)
-  ISM Manufacturing PMI proxy       MANEMP           Monthly (mfg employment)
-  Housing starts (total, SAAR)      HOUST            Monthly
-  Initial jobless claims            ICSA             Weekly
-  Conference Board LEI              USSLIND          Monthly  [requires subscription]
-  OECD CLI for USA                  USALOLITONOSTSAM Monthly
+  Indicator                         FRED Series ID       Frequency
+  ─────────────────────────────────────────────────────────────────
+  10-Year Treasury yield            GS10                 Monthly
+  2-Year Treasury yield             GS2                  Monthly
+  Yield curve spread (10Y-2Y)       T10Y2Y               Daily (FRED-computed)
+  OECD Composite Leading Indicator  USALOLITONOSTSAM     Monthly  [typically ~2 months stale]
+  Industrial Production: Mfg        IPMAN                Monthly  (index 2017=100)
+  Housing starts (total, SAAR)      HOUST                Monthly
+  Initial jobless claims            ICSA                 Weekly
+  Retail sales (total, NSA)         RSAFS                Monthly
+  University of Michigan sentiment  UMCSENT              Monthly
 
 Notes
 -----
-- USSLIND (Conference Board LEI) may return 403 if FRED's redistribution
-  agreement is not in place.  get_lei_composite() will return None and log a
-  warning rather than raising.
+- USALOLITONOSTSAM (OECD CLI) is freely redistributable via FRED; may run
+  ~2 months behind real-time.  The staleness gate in macro_overlay.py
+  suppresses it if the observation date is older than 120 days.
+- USSLIND (Conference Board LEI) requires a redistribution agreement not
+  available via the free FRED API and is NOT used.
 - T10Y2Y is FRED's own daily spread series; it's preferred over computing
   GS10 - GS2 manually because FRED interpolates missing business days.
 - All numeric values in FRED responses are strings; _safe_float() handles
@@ -47,7 +50,7 @@ Notes
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Optional, Tuple
 
 import requests
@@ -56,20 +59,6 @@ from config import Config
 from utils.logger import logger
 
 
-class StaleMacroError(Exception):
-    """
-    Raised when a macro indicator's observation date is too old to be
-    used in a fresh analysis.  The message includes the series ID,
-    observation date, and how many days stale it is.
-
-    The exception carries a ``snapshot`` attribute — the full LEI snapshot
-    dict that was built before the check failed.  Callers can catch this
-    error, null out the stale indicator, and continue with degraded data.
-    """
-    def __init__(self, message: str, snapshot: dict | None = None) -> None:
-        super().__init__(message)
-        self.snapshot: dict = snapshot or {}
-
 # ── FRED series ID constants ───────────────────────────────────────────────────
 
 # Yield curve
@@ -77,18 +66,23 @@ SERIES_YIELD_10Y          = "GS10"          # 10-Year Treasury Constant Maturity
 SERIES_YIELD_2Y           = "GS2"           # 2-Year Treasury Constant Maturity Rate
 SERIES_YIELD_SPREAD_10Y2Y = "T10Y2Y"        # 10-Year minus 2-Year (FRED-computed, daily)
 
-# Activity / PMI proxy
-SERIES_MFG_EMPLOYMENT     = "MANEMP"        # Manufacturing employees (monthly, SAAR)
+# OECD Composite Leading Indicator
+SERIES_OECD_CLI           = "USALOLITONOSTSAM"  # OECD CLI for US (monthly, centred on 100)
 
-# Housing
+# Industrial Production: Manufacturing
+SERIES_MFG_PROD           = "IPMAN"             # Industrial Production: Mfg (monthly, 2017=100)
+
+# Housing (display only — not used in scoring weights)
 SERIES_HOUSING_STARTS     = "HOUST"         # Housing starts: total (monthly, SAAR)
 
 # Labour market
 SERIES_JOBLESS_CLAIMS     = "ICSA"          # Initial claims, seasonally adjusted (weekly)
 
-# Composite leading indicators
-SERIES_CONF_BOARD_LEI     = "USSLIND"       # Conference Board LEI (may need subscription)
-SERIES_OECD_CLI_USA       = "USALOLITONOSTSAM"  # OECD CLI for United States (not seasonally adjusted)
+# Consumer spending
+SERIES_RETAIL_SALES       = "RSAFS"         # Retail and food services sales (monthly)
+
+# Consumer confidence
+SERIES_CONSUMER_SENTIMENT = "UMCSENT"       # U of Michigan Consumer Sentiment (monthly)
 
 _FRED_BASE = "https://api.stlouisfed.org/fred"
 _REQUEST_TIMEOUT = 15  # seconds
@@ -128,9 +122,10 @@ class FREDProvider:
     get_yield_spread()                 → latest T10Y2Y spread (float or None)
     get_housing_starts()               → latest HOUST value (float or None)
     get_jobless_claims()               → latest ICSA value (float or None)
-    get_lei_composite()                → latest USSLIND value (float or None)
-    get_oecd_cli()                     → latest OECD CLI value (float or None)
-    get_mfg_employment()               → latest MANEMP value (float or None)
+    get_oecd_cli()                     → latest USALOLITONOSTSAM value (float or None)
+    get_mfg_prod()                     → latest IPMAN value (float or None)
+    get_retail_sales()                 → latest RSAFS value (float or None)
+    get_consumer_sentiment()           → latest UMCSENT value (float or None)
     get_lei_snapshot()                 → dict of all key indicators (latest values)
     """
 
@@ -218,46 +213,48 @@ class FREDProvider:
     # ── Named convenience methods ──────────────────────────────────────────────
 
     def get_yield_spread(self) -> Optional[float]:
-        """
-        Return the latest 10Y-2Y Treasury yield spread (T10Y2Y).
-        A negative value signals yield curve inversion.
-        """
+        """Return the latest 10Y-2Y Treasury yield spread (T10Y2Y)."""
         return self.get_latest_value(SERIES_YIELD_SPREAD_10Y2Y)
 
     def get_housing_starts(self) -> Optional[float]:
-        """
-        Return the latest US housing starts (HOUST), thousands of units, SAAR.
-        """
+        """Return the latest US housing starts (HOUST), thousands of units, SAAR."""
         return self.get_latest_value(SERIES_HOUSING_STARTS)
 
     def get_jobless_claims(self) -> Optional[float]:
-        """
-        Return the latest initial jobless claims (ICSA), seasonally adjusted.
-        Unit: number of persons filing.
-        """
+        """Return the latest initial jobless claims (ICSA), seasonally adjusted."""
         return self.get_latest_value(SERIES_JOBLESS_CLAIMS)
 
-    def get_lei_composite(self) -> Optional[float]:
-        """
-        Return the latest Conference Board LEI index value (USSLIND).
-        May return None if FRED redistribution license is not in place (403).
-        """
-        return self.get_latest_value(SERIES_CONF_BOARD_LEI)
-
     def get_oecd_cli(self) -> Optional[float]:
-        """
-        Return the latest OECD Composite Leading Indicator for the USA.
-        Values > 100 indicate above-trend growth momentum.
-        """
-        return self.get_latest_value(SERIES_OECD_CLI_USA)
+        """Return the latest OECD Composite Leading Indicator for US (USALOLITONOSTSAM)."""
+        return self.get_latest_value(SERIES_OECD_CLI)
 
-    def get_mfg_employment(self) -> Optional[float]:
+    def get_mfg_prod(self) -> Optional[float]:
+        """Return the latest Industrial Production: Manufacturing index (IPMAN, 2017=100)."""
+        return self.get_latest_value(SERIES_MFG_PROD)
+
+    def get_retail_sales(self) -> Optional[float]:
+        """Return the latest retail sales level (RSAFS, millions USD)."""
+        return self.get_latest_value(SERIES_RETAIL_SALES)
+
+    def get_consumer_sentiment(self) -> Optional[float]:
+        """Return the latest University of Michigan Consumer Sentiment (UMCSENT)."""
+        return self.get_latest_value(SERIES_CONSUMER_SENTIMENT)
+
+    def _compute_retail_yoy(self) -> Optional[float]:
         """
-        Return the latest manufacturing employees count (MANEMP, thousands, SAAR).
-        Proxy for ISM / PMI-adjacent manufacturing activity when direct PMI is
-        unavailable from FRED.
+        Compute year-over-year % change in retail sales (RSAFS).
+        Requires at least 13 non-null monthly observations (current month + 12 prior).
+        Returns None if insufficient data.
         """
-        return self.get_latest_value(SERIES_MFG_EMPLOYMENT)
+        obs = self.get_series(SERIES_RETAIL_SALES, years_back=2)
+        non_null = [o for o in obs if o["value"] is not None]
+        if len(non_null) < 13:
+            return None
+        latest_val = non_null[-1]["value"]
+        prior_val  = non_null[-13]["value"]
+        if not prior_val:
+            return None
+        return (latest_val - prior_val) / abs(prior_val) * 100
 
     def get_series_trend(
         self,
@@ -277,7 +274,7 @@ class FREDProvider:
 
         noise_threshold prevents false signals from minor data revisions.
         Recommended values:
-          OECD CLI (USALOLITONOSTSAM) : 0.15  (values centred on ~100)
+          CB LEI (USSLIND)            : 0.10  (index level ~100-120)
           Yield spread (T10Y2Y)       : 0.10  (percentage points)
         """
         if not self.is_available():
@@ -295,7 +292,6 @@ class FREDProvider:
 
         if abs(delta) <= noise_threshold:
             # Flat — but check for inflection within the window
-            # (went one direction then reversed back to near-start)
             if len(values) >= 3:
                 mid = values[len(values) // 2]
                 mid_delta = mid - first
@@ -318,17 +314,19 @@ class FREDProvider:
         Returns a dict keyed by friendly name.  Each value is a float or None.
 
         Also returns "_observation_dates" sub-dict with the FRED observation date
-        for each indicator — lets callers log staleness without changing the
-        shape of the primary value fields.
+        for each indicator.
 
         Example return:
           {
-            "yield_spread_10y2y": -0.42,
-            "housing_starts":     1423.0,
-            "jobless_claims":     215000.0,
-            "lei_composite":      None,
-            "oecd_cli":           100.12,
-            "mfg_employment":     12872.0,
+            "yield_spread_10y2y":  0.42,
+            "housing_starts":      1423.0,
+            "jobless_claims":      215000.0,
+            "oecd_cli":            100.2,
+            "mfg_prod":            97.5,
+            "retail_sales_yoy":    3.1,
+            "consumer_sentiment":  74.5,
+            "lei_trend":           "rising",
+            "yield_spread_trend":  "flat",
             "_observation_dates": {
               "yield_spread_10y2y": "2026-02-14",
               "housing_starts":     "2026-01-01",
@@ -336,21 +334,16 @@ class FREDProvider:
             },
           }
         """
-        # Maximum age for the OECD CLI observation before we flag it as stale.
-        # The OECD publishes the CLI monthly with ~35-day lag, so 45 days allows
-        # one publication cycle of delay.  We complete the full fetch first so
-        # the caller receives the snapshot even when raising StaleMacroError.
-        _CLI_STALENESS_DAYS = 45
-
         snapshot: dict[str, Any] = {}
         obs_dates: dict[str, Optional[str]] = {}
+
         checks = [
             ("yield_spread_10y2y", SERIES_YIELD_SPREAD_10Y2Y),
             ("housing_starts",     SERIES_HOUSING_STARTS),
             ("jobless_claims",     SERIES_JOBLESS_CLAIMS),
-            ("lei_composite",      SERIES_CONF_BOARD_LEI),
-            ("oecd_cli",           SERIES_OECD_CLI_USA),
-            ("mfg_employment",     SERIES_MFG_EMPLOYMENT),
+            ("oecd_cli",           SERIES_OECD_CLI),
+            ("mfg_prod",           SERIES_MFG_PROD),
+            ("consumer_sentiment", SERIES_CONSUMER_SENTIMENT),
         ]
         for name, series_id in checks:
             value, obs_date = self.get_latest_with_date(series_id)
@@ -363,59 +356,36 @@ class FREDProvider:
             logger.info("FREDProvider: %s (%s) → %s", name, series_id, status)
             print(f"  [FRED] {name} ({series_id}) → {status}")
 
+        # Retail sales YoY — requires 13 months so computed separately
+        retail_yoy = self._compute_retail_yoy()
+        _, retail_date = self.get_latest_with_date(SERIES_RETAIL_SALES)
+        snapshot["retail_sales_yoy"] = retail_yoy
+        obs_dates["retail_sales_yoy"] = retail_date
+        retail_status = (
+            f"{retail_yoy:.1f}% YoY  (obs date: {retail_date})"
+            if retail_yoy is not None else "unavailable"
+        )
+        logger.info("FREDProvider: retail_sales_yoy (%s) → %s", SERIES_RETAIL_SALES, retail_status)
+        print(f"  [FRED] retail_sales_yoy ({SERIES_RETAIL_SALES}) → {retail_status}")
+
         snapshot["_observation_dates"] = obs_dates
 
-        # ── Trend direction for the two primary leading signals ────────────────
-        # n_periods is set per-series frequency:
-        #   OECD CLI (monthly)  → n_periods=3: 3 monthly steps = one quarter
-        #   T10Y2Y (daily)      → n_periods=20: ~1 trading month; daily noise
-        #                          over 4 days is far too small to exceed threshold
-        cli_trend    = self.get_series_trend(
-            SERIES_OECD_CLI_USA,       n_periods=3,  noise_threshold=0.15
+        # Trend directions: OECD CLI (monthly, 3-period) and yield spread (daily, 20-period)
+        lei_trend    = self.get_series_trend(
+            SERIES_OECD_CLI,           n_periods=3,  noise_threshold=0.10
         )
         spread_trend = self.get_series_trend(
             SERIES_YIELD_SPREAD_10Y2Y, n_periods=20, noise_threshold=0.10
         )
-        snapshot["oecd_cli_trend"]      = cli_trend
-        snapshot["yield_spread_trend"]  = spread_trend
+        snapshot["lei_trend"]          = lei_trend
+        snapshot["yield_spread_trend"] = spread_trend
 
         trend_log = (
-            f"oecd_cli_trend={cli_trend or 'N/A'}"
+            f"lei_trend={lei_trend or 'N/A'}"
             f"  yield_spread_trend={spread_trend or 'N/A'}"
         )
         logger.info("FREDProvider: trends — %s", trend_log)
         print(f"  [FRED] trends — {trend_log}")
-
-        # ── OECD CLI staleness gate ───────────────────────────────────────────
-        # Check AFTER the full snapshot is built so the caller receives the
-        # complete snapshot even when the error is raised (attached as exc.snapshot).
-        _cli_value    = snapshot.get("oecd_cli")
-        _cli_obs_date = obs_dates.get("oecd_cli")
-        if _cli_value is not None and _cli_obs_date is not None:
-            try:
-                _obs_dt   = datetime.strptime(_cli_obs_date, "%Y-%m-%d").date()
-                _days_old = (date.today() - _obs_dt).days
-                if _days_old > _CLI_STALENESS_DAYS:
-                    msg = (
-                        f"OECD CLI ({SERIES_OECD_CLI_USA}) observation is {_days_old} days old "
-                        f"(obs date: {_cli_obs_date}, value: {_cli_value}). "
-                        f"Threshold is {_CLI_STALENESS_DAYS} days. "
-                        f"Value may not reflect current conditions — "
-                        f"check FRED for a more recent publication."
-                    )
-                    logger.warning("FREDProvider: StaleMacroError — %s", msg)
-                    print(f"  [FRED] *** STALE CLI ({_days_old}d old) — raising StaleMacroError ***")
-                    raise StaleMacroError(msg, snapshot=snapshot)
-                else:
-                    print(
-                        f"  [FRED] oecd_cli freshness OK: {_days_old}d old "
-                        f"(threshold {_CLI_STALENESS_DAYS}d)"
-                    )
-            except (ValueError, TypeError):
-                logger.warning(
-                    "FREDProvider: could not parse oecd_cli obs_date %r — skipping staleness check",
-                    _cli_obs_date,
-                )
 
         return snapshot
 

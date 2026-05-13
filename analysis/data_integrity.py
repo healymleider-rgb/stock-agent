@@ -72,9 +72,9 @@ _SEVERITY_LEVEL: Dict[str, str] = {
     FlagCode.MARKET_CAP_INCONSISTENT:         "warning",
     FlagCode.PE_RECALCULATED:                 "caution",
     FlagCode.EV_EBITDA_RECALCULATED:          "caution",
-    FlagCode.EPS_GROWTH_POTENTIALLY_UNSTABLE: "warning",
+    FlagCode.EPS_GROWTH_POTENTIALLY_UNSTABLE: "caution",
     FlagCode.PEG_LOW_RELIABILITY:             "caution",
-    FlagCode.GROWTH_EPS_REVENUE_DIVERGENCE:   "warning",
+    FlagCode.GROWTH_EPS_REVENUE_DIVERGENCE:   "caution",
     FlagCode.EPS_VOLATILITY_HIGH:             "caution",
     FlagCode.MARGIN_DATA_LIMITED:             "info",
     FlagCode.DATA_MISSING:                    "info",
@@ -332,7 +332,7 @@ def _check_growth_sanity(
         if rev_growth is not None and rev_growth < 0.20:
             flags.append(ValidationFlag(
                 code     = FlagCode.EPS_GROWTH_POTENTIALLY_UNSTABLE,
-                severity = "warning",
+                severity = "caution",
                 detail   = (
                     f"EPS growth ({eps_growth_pct:.1f}%) far exceeds revenue growth "
                     f"({rev_growth*100:.1f}%) — likely driven by margin expansion "
@@ -347,7 +347,7 @@ def _check_growth_sanity(
         if divergence > 0.25:
             flags.append(ValidationFlag(
                 code     = FlagCode.GROWTH_EPS_REVENUE_DIVERGENCE,
-                severity = "warning",
+                severity = "caution",
                 detail   = (
                     f"EPS growth ({eps_growth_pct:.1f}%) and revenue growth "
                     f"({rev_growth*100:.1f}%) diverge by {divergence*100:.1f}pp — "

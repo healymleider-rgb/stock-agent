@@ -55,3 +55,14 @@ utils/utils.ts
 
 # TypeScript incremental compilation cache
 *.tsbuildinfo
+
+# ── Generated reports (PDFs, comparison CSVs, batch outputs) ──────────────────
+reports/
+
+# ── Transcripts (development notes, not code) ─────────────────────────────────
+transcripts/
+journal.txt
+
+# Personal portfolio data (decisions, watchlist) — not for repo
+scripts/boss_actions.py
+tickers.txt

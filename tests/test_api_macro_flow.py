@@ -40,7 +40,7 @@ def _full_payload(**overrides) -> dict:
         "sector_tilt":            "Small-caps, Cyclicals, Real Estate",
         "reasoning_summary":      "Macro score 61/100 → Recovery (early). Recession risk: Moderate.",
         "bullish_macro_factors":  ["Yield curve modestly positive (0.50pp)"],
-        "bearish_macro_factors":  ["OECD CLI below trend (99.85)"],
+        "bearish_macro_factors":  ["OECD CLI below trend (99.85) — growth momentum fading"],
         "data_coverage":          1.0,
         # Phase 1 LEI fields
         "cycle_phase":            "early",
@@ -69,7 +69,7 @@ class TestExtractMacroFields:
         assert result["recession_risk_level"] == "Moderate"
         assert result["sector_tilt"]          == "Small-caps, Cyclicals, Real Estate"
         assert result["bullish_macro_factors"] == ["Yield curve modestly positive (0.50pp)"]
-        assert result["bearish_macro_factors"] == ["OECD CLI below trend (99.85)"]
+        assert result["bearish_macro_factors"] == ["OECD CLI below trend (99.85) — growth momentum fading"]
 
     def test_cycle_phase_passes_through(self):
         result = _extract_macro(_make_state(_full_payload()))

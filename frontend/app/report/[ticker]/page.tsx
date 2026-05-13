@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { evaluate } from "@/lib/api";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { evaluate, pollJob } from "@/lib/api";
 import type { EvaluateResponse, CategoryScore, MCSim, PeerRow as PeerRowType, TrendResult, HistoricalYear, ValuationRange, MacroData, ValidationLog } from "@/lib/types";
 import {
   cn,
@@ -429,7 +429,11 @@ function ReportSkeleton() {
 export default function ReportPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const ticker = (params?.ticker as string)?.toUpperCase() ?? "";
+  // When job_id is provided (e.g. from batch PDF generation), load the
+  // pre-computed result instead of starting a fresh evaluation.
+  const preloadJobId = searchParams?.get("job_id") ?? null;
 
   const [data, setData] = useState<EvaluateResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -442,10 +446,22 @@ export default function ReportPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await evaluate(ticker, (s, p) => {
-        setStep(s);
-        setProgress(p);
-      });
+      let result: EvaluateResponse;
+      if (preloadJobId) {
+        // Batch / PDF path: fetch the completed job directly, no re-evaluation.
+        setStep("Loading report…");
+        setProgress(90);
+        const status = await pollJob(preloadJobId);
+        if (!status.result) {
+          throw new Error(`Job ${preloadJobId} has no result (status: ${status.status})`);
+        }
+        result = status.result;
+      } else {
+        result = await evaluate(ticker, (s, p) => {
+          setStep(s);
+          setProgress(p);
+        });
+      }
       setData(result);
       _savePortfolioSnapshot(ticker, result);
     } catch (err: unknown) {
@@ -453,7 +469,7 @@ export default function ReportPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [ticker]);
+  }, [ticker, preloadJobId]);
 
   useEffect(() => {
     if (ticker) load();
@@ -514,6 +530,11 @@ export default function ReportPage() {
   const { scorecard, stock_info, valuation_range, macro, memo } = data;
   const trends: TrendResult | null = data.trends ?? null;
 
+  // Parse canonical ACTION + reason from memo (single source of truth — overrides frontend recompute)
+  const _memoAction = memo.match(/^\s*ACTION\s*:\s*(BUY|STAGED BUY|HOLD|WAIT|SELL)\b[^(]*(?:\(([^)]*)\))?/m);
+  const backendAction:    string | null = _memoAction?.[1]?.trim() ?? null;
+  const backendActionWhy: string | null = _memoAction?.[2]?.trim() ?? null;
+
   // ── Data staleness flags ─────────────────────────────────────────────────────
   // Price: flag if quote date is > 5 days before evaluation (delayed / stale feed)
   // Fundamentals: flag if most recent statement is > 400 days old (>1 annual cycle)
@@ -546,6 +567,7 @@ export default function ReportPage() {
           stock_info.sector,
           stock_info.beta ?? 1.0,
           stock_info.current_price,
+          stock_info.beta_reliable ?? true,
         )
       : null;
   const displayMC: MCSim | null | undefined = macroAdj
@@ -711,7 +733,7 @@ export default function ReportPage() {
   const sanitizedTopTakeaway  = pageLevelDS ? sanitizeNarrative(topTakeaway,  pageLevelDS) : topTakeaway;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50" data-report-ready="true">
       {/* ── Sticky top bar ─────────────────────────────────────── */}
       <div className="sticky top-0 z-50 bg-white/95 backdrop-blur border-b border-slate-200 no-print">
         <div className="max-w-7xl mx-auto px-6 h-14 flex items-center gap-4">
@@ -810,26 +832,35 @@ export default function ReportPage() {
                 <div className="mt-3 px-3 py-2.5 bg-slate-900 rounded-lg">
                   <p className="text-sm font-medium text-white leading-snug">{sanitizedCallout}</p>
                 </div>
-                {/* Execution action row — distinguishes current action from long-term thesis */}
+                {/* Action header — ACTION is primary; Thesis is supporting long-term context */}
                 {pageLevelDS && (
-                  <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                    <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Action</span>
-                    <span
-                      className="text-xs font-bold px-2 py-0.5 rounded-full"
-                      style={{ backgroundColor: pageLevelDS.thesisRatingBg, color: pageLevelDS.thesisRatingFg } as React.CSSProperties}
-                    >
-                      Thesis: {pageLevelDS.thesisRating}
-                    </span>
-                    <ArrowRight className="w-3 h-3 text-slate-300 shrink-0" />
-                    <span
-                      className="text-xs font-bold px-2 py-0.5 rounded-full"
-                      style={{ backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg } as React.CSSProperties}
-                    >
-                      {pageLevelDS.executionStatus}
-                    </span>
-                    <span className="text-[11px] text-slate-400">
-                      · {pageLevelDS.conviction} conviction · {pageLevelDS.targetPct} target
-                    </span>
+                  <div className="flex flex-col gap-1 mt-1.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className="text-xs font-bold px-2 py-0.5 rounded-full"
+                        style={{ backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg } as React.CSSProperties}
+                      >
+                        {backendAction ?? pageLevelDS.executionStatus}
+                      </span>
+                      {backendActionWhy && (
+                        <span className="text-[11px] text-slate-400">{backendActionWhy}</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 m-0">
+                      Thesis: <strong>{pageLevelDS.thesisRating}</strong> long-term
+                      {(pageLevelDS.executionStatus === 'EXIT' || pageLevelDS.executionStatus === 'TRIM' || backendAction === 'SELL')
+                        ? ', but execution warrants exit' : ''}
+                      {' '}· {pageLevelDS.conviction} conviction
+                    </p>
+                    {(backendAction === 'BUY' || backendAction === 'STAGED BUY' ||
+                      (!backendAction && (pageLevelDS.executionStatus === 'BUY NOW' || pageLevelDS.executionStatus === 'STAGED BUY'))) && (
+                      <p className="text-[11px] text-slate-500 m-0">
+                        Target: {pageLevelDS.targetPct}
+                        {(backendAction === 'STAGED BUY' || pageLevelDS.executionStatus === 'STAGED BUY')
+                          ? ` — build in 3 tranches (${pageLevelDS.currentPct} now)`
+                          : ''}
+                      </p>
+                    )}
                   </div>
                 )}
                 {stock_info.description && (
@@ -880,7 +911,13 @@ export default function ReportPage() {
                       noteHref={stock_info.shares_filing_url ?? undefined}
                     />
                   )}
-                  <StatCell label="Beta" value={safeFixed(stock_info.beta, 2)} />
+                  <StatCell
+                    label="Beta"
+                    value={stock_info.beta_reliable === false ? '—' : safeFixed(stock_info.beta, 2)}
+                    note={stock_info.beta_reliable === false
+                      ? `Limited history (${stock_info.beta_months ?? 0} mo) — value not reliable`
+                      : undefined}
+                  />
                   <StatCell label="Gross Margin" value={formatRatio(stock_info.gross_margin)} />
                   <StatCell label="Net Margin" value={formatRatio(stock_info.net_margin)} />
                 </div>
@@ -1469,20 +1506,32 @@ export default function ReportPage() {
                 <div className="mt-3 px-3 py-2 bg-slate-900 rounded">
                   <p className="text-sm font-medium text-white leading-snug">{sanitizedCallout}</p>
                 </div>
-                {/* Thesis / Execution row — print cover */}
+                {/* Action header — print cover */}
                 {pageLevelDS && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
-                    <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Action</span>
-                    <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '9999px', backgroundColor: pageLevelDS.thesisRatingBg, color: pageLevelDS.thesisRatingFg, WebkitPrintColorAdjust: 'exact' }}>
-                      Thesis: {pageLevelDS.thesisRating}
-                    </span>
-                    <span style={{ fontSize: '9px', color: '#94a3b8' }}>→</span>
-                    <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg, WebkitPrintColorAdjust: 'exact' }}>
-                      {pageLevelDS.executionStatus}
-                    </span>
-                    <span style={{ fontSize: '9px', color: '#94a3b8' }}>
-                      · {pageLevelDS.conviction} conviction · {pageLevelDS.targetPct} target
-                    </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg, WebkitPrintColorAdjust: 'exact' }}>
+                        {backendAction ?? pageLevelDS.executionStatus}
+                      </span>
+                      {backendActionWhy && (
+                        <span style={{ fontSize: '9px', color: '#94a3b8' }}>{backendActionWhy}</span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: '9px', color: '#64748b', margin: 0 }}>
+                      Thesis: <strong>{pageLevelDS.thesisRating}</strong> long-term
+                      {(pageLevelDS.executionStatus === 'EXIT' || pageLevelDS.executionStatus === 'TRIM' || backendAction === 'SELL')
+                        ? ', but execution warrants exit' : ''}
+                      {' '}· {pageLevelDS.conviction} conviction
+                    </p>
+                    {(backendAction === 'BUY' || backendAction === 'STAGED BUY' ||
+                      (!backendAction && (pageLevelDS.executionStatus === 'BUY NOW' || pageLevelDS.executionStatus === 'STAGED BUY'))) && (
+                      <p style={{ fontSize: '9px', color: '#64748b', margin: 0 }}>
+                        Target: {pageLevelDS.targetPct}
+                        {(backendAction === 'STAGED BUY' || pageLevelDS.executionStatus === 'STAGED BUY')
+                          ? ` — build in 3 tranches (${pageLevelDS.currentPct} now)`
+                          : ''}
+                      </p>
+                    )}
                   </div>
                 )}
                 {data.key_tension && (
@@ -1514,7 +1563,14 @@ export default function ReportPage() {
               <StatCell label="EV/EBITDA" value={formatMultiple(stock_info.ev_ebitda)} large
                 note={stock_info._sources?.ev_ebitda ?? undefined}
               />
-              <StatCell label="Beta" value={safeFixed(stock_info.beta, 2)} large />
+              <StatCell
+                label="Beta"
+                value={stock_info.beta_reliable === false ? '—' : safeFixed(stock_info.beta, 2)}
+                note={stock_info.beta_reliable === false
+                  ? `Limited history (${stock_info.beta_months ?? 0} mo)`
+                  : undefined}
+                large
+              />
             </div>
             <div className="space-y-2 border-t border-slate-100 pt-4">
               {scorecard.bullish_factors[0] && (
@@ -1538,8 +1594,8 @@ export default function ReportPage() {
             </div>
           </div>
 
-          {/* PAGE 2 — Category Breakdown */}
-          <div className="print-page print-page-break">
+          {/* PAGE 2 — Category Breakdown (no forced break; flows with PAGE 1 if space allows) */}
+          <div className="print-page">
             <h2 className="text-xl font-bold text-slate-900 mb-6 pb-2 border-b border-slate-200">Category Breakdown</h2>
             <div className="space-y-5">
               {Object.entries(categories).map(([key, cat]) => (
@@ -1608,8 +1664,6 @@ export default function ReportPage() {
                   </Card>
                 )}
               </div>
-              {/* Trend Summary */}
-              <TrendSummaryCard trends={trends} />
             </div>
           </div>
 
@@ -1617,6 +1671,8 @@ export default function ReportPage() {
           <div className="print-page print-page-break">
             <h2 className="text-xl font-bold text-slate-900 mb-6 pb-2 border-b border-slate-200">Valuation</h2>
             <div className="space-y-4">
+              {/* Trend Summary flows with Valuation View */}
+              <TrendSummaryCard trends={trends} />
               <Card className="border-slate-200 shadow-sm">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-semibold text-slate-700">Current Valuation</CardTitle>
@@ -1865,18 +1921,32 @@ export default function ReportPage() {
                   <CardTitle className="text-sm font-semibold text-slate-700">Verdict</CardTitle>
                 </CardHeader>
                 <CardContent className="px-6 pb-6 space-y-3">
-                  {/* Thesis / Execution alignment — print version */}
+                  {/* Action header — print Final Verdict */}
                   {pageLevelDS && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '4px' }}>
-                      <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 8px', borderRadius: '9999px', backgroundColor: pageLevelDS.thesisRatingBg, color: pageLevelDS.thesisRatingFg, WebkitPrintColorAdjust: 'exact' }}>
-                        Thesis: {pageLevelDS.thesisRating}
-                      </span>
-                      <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 8px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg, WebkitPrintColorAdjust: 'exact' }}>
-                        {pageLevelDS.executionStatus}
-                      </span>
-                      <span style={{ fontSize: '10px', color: '#64748b' }}>
-                        · {pageLevelDS.conviction} conviction · {pageLevelDS.targetPct} target · {pageLevelDS.currentPct} now
-                      </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginBottom: '4px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 8px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg, WebkitPrintColorAdjust: 'exact' }}>
+                          {backendAction ?? pageLevelDS.executionStatus}
+                        </span>
+                        {backendActionWhy && (
+                          <span style={{ fontSize: '9px', color: '#94a3b8' }}>{backendActionWhy}</span>
+                        )}
+                      </div>
+                      <p style={{ fontSize: '10px', color: '#64748b', margin: 0 }}>
+                        Thesis: <strong>{pageLevelDS.thesisRating}</strong> long-term
+                        {(pageLevelDS.executionStatus === 'EXIT' || pageLevelDS.executionStatus === 'TRIM' || backendAction === 'SELL')
+                          ? ', but execution warrants exit' : ''}
+                        {' '}· {pageLevelDS.conviction} conviction
+                      </p>
+                      {(backendAction === 'BUY' || backendAction === 'STAGED BUY' ||
+                        (!backendAction && (pageLevelDS.executionStatus === 'BUY NOW' || pageLevelDS.executionStatus === 'STAGED BUY'))) && (
+                        <p style={{ fontSize: '10px', color: '#64748b', margin: 0 }}>
+                          Target: {pageLevelDS.targetPct}
+                          {(backendAction === 'STAGED BUY' || pageLevelDS.executionStatus === 'STAGED BUY')
+                            ? ` — build in 3 tranches (${pageLevelDS.currentPct} now)`
+                            : ''}
+                        </p>
+                      )}
                     </div>
                   )}
                   <div className="flex items-center gap-3">
@@ -1907,7 +1977,7 @@ export default function ReportPage() {
           </div>
 
           {/* PAGE 8 — Investment Memo (single, final) */}
-          <div className="print-page print-page-break">
+          <div className="print-page">
             <h2 className="text-xl font-bold text-slate-900 mb-6 pb-2 border-b border-slate-200">Investment Memo</h2>
             <div className="space-y-5">
               {topTakeaway && (
@@ -1974,19 +2044,32 @@ export default function ReportPage() {
             <CardTitle className="text-base font-semibold text-slate-800">Investment Memo</CardTitle>
           </CardHeader>
           <CardContent className="px-6 pb-6 space-y-6">
-            {/* Execution context strip — aligns memo to current decision state */}
+            {/* Action context strip — aligns memo to current decision state */}
             {pageLevelDS && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '8px 12px', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #f1f5f9' }}>
-                <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: '4px' }}>Report Context</span>
-                <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 8px', borderRadius: '9999px', backgroundColor: pageLevelDS.thesisRatingBg, color: pageLevelDS.thesisRatingFg }}>
-                  Thesis: {pageLevelDS.thesisRating}
-                </span>
-                <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 8px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg }}>
-                  {pageLevelDS.executionStatus}
-                </span>
-                <span style={{ fontSize: '11px', fontWeight: 600, padding: '1px 8px', borderRadius: '9999px', backgroundColor: '#f1f5f9', color: '#475569' }}>
-                  Conviction: {pageLevelDS.conviction}
-                </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px 12px', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #f1f5f9' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, padding: '1px 8px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg }}>
+                    {backendAction ?? pageLevelDS.executionStatus}
+                  </span>
+                  {backendActionWhy && (
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>{backendActionWhy}</span>
+                  )}
+                </div>
+                <p style={{ fontSize: '11px', color: '#64748b', margin: 0 }}>
+                  Thesis: <strong>{pageLevelDS.thesisRating}</strong> long-term
+                  {(pageLevelDS.executionStatus === 'EXIT' || pageLevelDS.executionStatus === 'TRIM' || backendAction === 'SELL')
+                    ? ', but execution warrants exit' : ''}
+                  {' '}· {pageLevelDS.conviction} conviction
+                </p>
+                {(backendAction === 'BUY' || backendAction === 'STAGED BUY' ||
+                  (!backendAction && (pageLevelDS.executionStatus === 'BUY NOW' || pageLevelDS.executionStatus === 'STAGED BUY'))) && (
+                  <p style={{ fontSize: '11px', color: '#64748b', margin: 0 }}>
+                    Target: {pageLevelDS.targetPct}
+                    {(backendAction === 'STAGED BUY' || pageLevelDS.executionStatus === 'STAGED BUY')
+                      ? ` — build in 3 tranches (${pageLevelDS.currentPct} now)`
+                      : ''}
+                  </p>
+                )}
               </div>
             )}
             {/* Investment Thesis — MemoEngine structured bullets */}
@@ -2058,19 +2141,32 @@ export default function ReportPage() {
               <CardTitle className="text-base font-semibold text-slate-800">Final Verdict</CardTitle>
             </CardHeader>
             <CardContent className="px-6 pb-6 space-y-4">
-              {/* Thesis / Execution / Conviction alignment strip */}
+              {/* Action header — web Final Verdict */}
               {pageLevelDS && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, padding: '2px 10px', borderRadius: '9999px', backgroundColor: pageLevelDS.thesisRatingBg, color: pageLevelDS.thesisRatingFg }}>
-                    {pageLevelDS.thesisRating}
-                  </span>
-                  <ArrowRight className="w-3 h-3 text-slate-300 shrink-0" />
-                  <span style={{ fontSize: '12px', fontWeight: 700, padding: '2px 10px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg }}>
-                    {pageLevelDS.executionStatus}
-                  </span>
-                  <span style={{ fontSize: '11px', color: '#64748b', marginLeft: '2px' }}>
-                    · {pageLevelDS.conviction} conviction · {pageLevelDS.targetPct} target
-                  </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, padding: '2px 10px', borderRadius: '9999px', backgroundColor: pageLevelDS.executionBg, color: pageLevelDS.executionFg }}>
+                      {backendAction ?? pageLevelDS.executionStatus}
+                    </span>
+                    {backendActionWhy && (
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>{backendActionWhy}</span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '11px', color: '#64748b', margin: 0 }}>
+                    Thesis: <strong>{pageLevelDS.thesisRating}</strong> long-term
+                    {(pageLevelDS.executionStatus === 'EXIT' || pageLevelDS.executionStatus === 'TRIM' || backendAction === 'SELL')
+                      ? ', but execution warrants exit' : ''}
+                    {' '}· {pageLevelDS.conviction} conviction
+                  </p>
+                  {(backendAction === 'BUY' || backendAction === 'STAGED BUY' ||
+                    (!backendAction && (pageLevelDS.executionStatus === 'BUY NOW' || pageLevelDS.executionStatus === 'STAGED BUY'))) && (
+                    <p style={{ fontSize: '11px', color: '#64748b', margin: 0 }}>
+                      Target: {pageLevelDS.targetPct}
+                      {(backendAction === 'STAGED BUY' || pageLevelDS.executionStatus === 'STAGED BUY')
+                        ? ` — build in 3 tranches (${pageLevelDS.currentPct} now)`
+                        : ''}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -4065,7 +4161,13 @@ function classifyMacroRegime(macro: MacroData): MacroRegime {
 function getSectorSensitivity(
   sector: string | null | undefined,
   beta: number,
+  betaReliable: boolean = true,
 ): { sensitivity: SectorSensitivity; mult: number; label: string } {
+  // When beta is unreliable (< 24 months history or |beta| > 5), skip beta adjustment
+  if (!betaReliable) {
+    return { sensitivity: 'medium', mult: 0.60, label: 'Distribution not beta-adjusted due to limited history' };
+  }
+
   const s = (sector ?? '').toLowerCase();
 
   // High beta always implies high macro sensitivity
@@ -4091,11 +4193,12 @@ function computeMacroAdjustment(
   sector:       string | null | undefined,
   beta:         number,
   currentPrice: number,
+  betaReliable: boolean = true,
 ): MacroAdjustment {
   const regime  = classifyMacroRegime(macro);
   const regMeta = _REGIME_META[regime];
   const baseAdj = _REGIME_ADJS[regime];
-  const { sensitivity, mult: sMult, label: sLabel } = getSectorSensitivity(sector, beta);
+  const { sensitivity, mult: sMult, label: sLabel } = getSectorSensitivity(sector, beta, betaReliable);
 
   // Effective multiplier = 1 + (base_shift × sensitivity_multiplier)
   const p5Mult  = 1 + baseAdj.p5  * sMult;

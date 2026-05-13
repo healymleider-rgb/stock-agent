@@ -269,6 +269,8 @@ export interface StockInfo {
   industry: string;
   description: string;
   beta: number | null;
+  beta_reliable: boolean | null;
+  beta_months: number | null;
   current_price: number | null;
   market_cap: number | null;
   pe_ratio: number | null;

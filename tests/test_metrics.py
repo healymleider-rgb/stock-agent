@@ -1579,24 +1579,26 @@ from analysis.macro_overlay import score as macro_score
 
 
 def _macro_snap(
-    yield_spread: float | None  = 0.80,
-    jobless_claims: float | None= 210_000.0,
-    housing_starts: float | None= 1_450.0,
-    mfg_employment: float | None= 13_100.0,
-    oecd_cli: float | None      = 100.6,
-    lei_composite: float | None = None,
-    oecd_cli_trend: str | None  = None,
-    yield_spread_trend: str | None = None,
+    yield_spread: float | None       = 0.80,
+    jobless_claims: float | None     = 210_000.0,
+    housing_starts: float | None     = 1_450.0,
+    mfg_prod: float | None           = 100.0,
+    oecd_cli: float | None           = 100.2,
+    retail_sales_yoy: float | None   = 3.5,
+    consumer_sentiment: float | None = 72.0,
+    lei_trend: str | None            = None,
+    yield_spread_trend: str | None   = None,
 ) -> dict:
     """Synthetic LEI snapshot — mirrors FREDProvider.get_lei_snapshot() output."""
     return {
         "yield_spread_10y2y":  yield_spread,
         "jobless_claims":      jobless_claims,
         "housing_starts":      housing_starts,
-        "mfg_employment":      mfg_employment,
+        "mfg_prod":            mfg_prod,
         "oecd_cli":            oecd_cli,
-        "lei_composite":       lei_composite,
-        "oecd_cli_trend":      oecd_cli_trend,
+        "retail_sales_yoy":    retail_sales_yoy,
+        "consumer_sentiment":  consumer_sentiment,
+        "lei_trend":           lei_trend,
         "yield_spread_trend":  yield_spread_trend,
     }
 
@@ -1607,8 +1609,8 @@ def test_macro_expansion_when_all_indicators_healthy():
         yield_spread=0.90,
         jobless_claims=205_000,
         housing_starts=1_600,
-        mfg_employment=13_200,
-        oecd_cli=100.8,
+        mfg_prod=103.5,
+        oecd_cli=100.6,
     ))
     assert a.macro_regime == "Expansion", f"Expected Expansion, got {a.macro_regime}"
     assert a.macro_score > 65, f"Expected score > 65, got {a.macro_score}"
@@ -1621,8 +1623,10 @@ def test_macro_contraction_when_deeply_inverted():
         yield_spread=-0.90,
         jobless_claims=380_000,
         housing_starts=820,
-        mfg_employment=11_200,
-        oecd_cli=99.0,
+        mfg_prod=92.0,
+        oecd_cli=98.2,
+        retail_sales_yoy=-1.0,
+        consumer_sentiment=48.0,
     ))
     assert a.macro_regime == "Contraction", f"Expected Contraction, got {a.macro_regime}"
     assert a.recession_risk_level == "High"
@@ -1636,8 +1640,8 @@ def test_macro_recovery_not_contraction_when_spread_recovering():
         yield_spread=-0.20,
         jobless_claims=240_000,
         housing_starts=1_100,
-        mfg_employment=12_200,
-        oecd_cli=99.6,
+        mfg_prod=98.0,
+        oecd_cli=99.5,
     ))
     assert a.macro_regime == "Recovery", (
         f"Expected Recovery, got {a.macro_regime} (score={a.macro_score:.1f})"
@@ -1645,11 +1649,11 @@ def test_macro_recovery_not_contraction_when_spread_recovering():
 
 
 def test_cycle_phase_mid_when_expansion_cli_rising():
-    """Expansion + rising CLI + healthy spread → cycle_phase == 'mid'."""
+    """Expansion + rising OECD CLI + healthy spread → cycle_phase == 'mid'."""
     a = macro_score(_macro_snap(
         yield_spread=0.80,
-        oecd_cli=100.7,
-        oecd_cli_trend="rising",
+        oecd_cli=100.6,
+        lei_trend="rising",
         yield_spread_trend="rising",
     ))
     assert a.macro_regime == "Expansion"
@@ -1659,11 +1663,11 @@ def test_cycle_phase_mid_when_expansion_cli_rising():
 
 
 def test_cycle_phase_late_when_expansion_cli_falling():
-    """Expansion regime + falling CLI → cycle_phase == 'late'."""
+    """Expansion regime + falling OECD CLI → cycle_phase == 'late'."""
     a = macro_score(_macro_snap(
         yield_spread=0.80,       # spread healthy — not the trigger
-        oecd_cli=100.4,
-        oecd_cli_trend="falling",
+        oecd_cli=100.2,
+        lei_trend="falling",
         yield_spread_trend=None,
     ))
     assert a.macro_regime == "Expansion"
@@ -1675,22 +1679,22 @@ def test_cycle_phase_late_when_expansion_spread_tight():
     """Expansion + spread below 0.25pp (tight) → cycle_phase == 'late'."""
     a = macro_score(_macro_snap(
         yield_spread=0.15,       # tight but not inverted
-        oecd_cli=100.5,
-        oecd_cli_trend="rising", # CLI still rising — spread is the trigger
+        oecd_cli=100.2,
+        lei_trend="rising",      # CLI still rising — spread is the trigger
     ))
     assert a.macro_regime == "Expansion"
     assert a.cycle_phase == "late", f"Expected late, got {a.cycle_phase}"
 
 
 def test_cycle_phase_early_when_slowdown_inflecting():
-    """Slowdown + CLI inflecting + spread turning up → cycle_phase == 'early' (turning point)."""
+    """Slowdown + OECD CLI inflecting + spread turning up → cycle_phase == 'early' (turning point)."""
     a = macro_score(_macro_snap(
         yield_spread=-0.05,       # near zero — still slightly inverted
         jobless_claims=245_000,
         housing_starts=1_050,
-        mfg_employment=12_100,
-        oecd_cli=99.7,
-        oecd_cli_trend="inflecting",
+        mfg_prod=97.5,
+        oecd_cli=99.8,
+        lei_trend="inflecting",
         yield_spread_trend="rising",
     ))
     # Regime may be Slowdown or Recovery depending on exact score; phase should be early
@@ -1706,8 +1710,10 @@ def test_cycle_phase_contraction_when_regime_contraction():
         yield_spread=-1.20,
         jobless_claims=420_000,
         housing_starts=700,
-        mfg_employment=11_000,
-        oecd_cli=98.5,
+        mfg_prod=92.0,
+        oecd_cli=98.2,
+        retail_sales_yoy=-1.5,
+        consumer_sentiment=44.0,
     ))
     assert a.macro_regime == "Contraction"
     assert a.cycle_phase == "contraction"
@@ -1718,7 +1724,7 @@ def test_cycle_phase_unknown_when_trend_fields_absent():
     from regime alone — must not be None and must be a valid phase string."""
     a = macro_score(_macro_snap(
         yield_spread=0.80,
-        oecd_cli_trend=None,        # no trend data available
+        lei_trend=None,             # no trend data available
         yield_spread_trend=None,
     ))
     valid_phases = {"early", "mid", "late", "contraction", "unknown"}
@@ -1738,8 +1744,10 @@ def test_macro_confidence_modifier_negative_on_contraction():
         yield_spread=-1.00,
         jobless_claims=360_000,
         housing_starts=750,
-        mfg_employment=11_100,
-        oecd_cli=98.6,
+        mfg_prod=92.5,
+        oecd_cli=98.5,
+        retail_sales_yoy=-0.5,
+        consumer_sentiment=46.0,
     ))
     assert a.confidence_modifier < 0, (
         f"Contraction regime should produce negative confidence_modifier, "
@@ -1833,19 +1841,19 @@ def test_macro_section_safe_when_new_fields_absent():
 
 
 def test_macro_slowdown_regime_and_phase():
-    """Moderately weak indicators (score ~55) → Slowdown, Moderate risk, late phase.
+    """Moderately weak indicators (score ~56) → Slowdown, Moderate risk, late phase.
     Key: claims > 250k prevents the Recovery override; spread modestly positive.
     """
     a = macro_score(_macro_snap(
-        yield_spread=0.20,        # modestly positive → not inverted, score=65 for this indicator
+        yield_spread=0.20,        # modestly positive → score=65
         jobless_claims=255_000,   # just above 250k → bars Recovery override; score=40
         housing_starts=1_250,     # adequate → score=62
-        mfg_employment=12_600,    # adequate → score=62
-        oecd_cli=99.6,            # slightly below trend → score=40
-        oecd_cli_trend="falling",
+        mfg_prod=98.5,            # below trend → score=42
+        oecd_cli=100.1,           # at trend → score=60
+        lei_trend="falling",
         yield_spread_trend=None,
     ))
-    # weighted ≈ 65*0.30 + 40*0.25 + 62*0.20 + 62*0.15 + 40*0.10 ≈ 55
+    # weighted ≈ 65*0.22 + 40*0.18 + 62*0.15 + 62*0.15 + 62*0.12 + 42*0.12 + 60*0.06 ≈ 56
     assert a.macro_regime == "Slowdown", (
         f"Expected Slowdown, got {a.macro_regime} (score={a.macro_score:.1f})"
     )
@@ -1880,7 +1888,7 @@ def test_phase_sector_tilt_is_phase_specific():
     """Phase-specific tilt should differ from the regime-level fallback for late Expansion."""
     a_late = macro_score(_macro_snap(
         yield_spread=0.15,        # tight → late-cycle
-        oecd_cli_trend="rising",  # CLI still ok
+        lei_trend="rising",       # CLI still ok — spread is the trigger
     ))
     assert a_late.macro_regime == "Expansion"
     assert a_late.cycle_phase == "late"
@@ -1891,8 +1899,8 @@ def test_phase_sector_tilt_is_phase_specific():
 
     a_mid = macro_score(_macro_snap(
         yield_spread=0.80,
-        oecd_cli=100.7,
-        oecd_cli_trend="rising",
+        oecd_cli=100.6,
+        lei_trend="rising",
         yield_spread_trend="rising",
     ))
     assert a_mid.macro_regime == "Expansion"
@@ -1947,7 +1955,7 @@ def test_confidence_adjustment_rationale_populated():
         yield_spread=0.80,
         jobless_claims=210_000,
         housing_starts=1_500,
-        mfg_employment=13_000,
+        mfg_prod=103.5,
         oecd_cli=100.6,
     ))
     assert a.confidence_adjustment_rationale, (
